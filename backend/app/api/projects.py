@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.db.session import SessionDep
-from app.models import Project
-from app.schemas import ProjectCreate, ProjectOut
+from app.models import ChatMessage, ChatSession, Project
+from app.schemas import ChatSessionSummary, ProjectCreate, ProjectOut
 from app.services.training import collection_name_for
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -48,3 +48,35 @@ async def delete_project(project_id: str, db: SessionDep) -> None:
         raise HTTPException(status_code=404, detail="project not found")
     await db.delete(proj)
     await db.commit()
+
+
+@router.get("/{project_id}/chat/sessions", response_model=list[ChatSessionSummary])
+async def list_chat_sessions(
+    project_id: str, db: SessionDep
+) -> list[ChatSessionSummary]:
+    proj = await db.get(Project, project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="project not found")
+    rows = (
+        await db.execute(
+            select(
+                ChatSession.id,
+                ChatSession.title,
+                ChatSession.created_at,
+                func.count(ChatMessage.id).label("message_count"),
+            )
+            .outerjoin(ChatMessage, ChatMessage.session_id == ChatSession.id)
+            .where(ChatSession.project_id == project_id)
+            .group_by(ChatSession.id)
+            .order_by(ChatSession.created_at.desc())
+        )
+    ).all()
+    return [
+        ChatSessionSummary(
+            id=r.id,
+            title=r.title,
+            created_at=r.created_at.isoformat(),
+            message_count=int(r.message_count or 0),
+        )
+        for r in rows
+    ]

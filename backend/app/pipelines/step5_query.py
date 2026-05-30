@@ -71,6 +71,29 @@ AGENT2_SYSTEM_PROMPT = (
 )
 
 
+CLARIFY_SYSTEM_PROMPT = (
+    "You are Agent2 in clarification mode. The retrieval system could not "
+    "find chunks confidently relevant to the user's question. DO NOT try to "
+    "answer. Instead, ask ONE concise clarifying question (in the user's "
+    "language) to help narrow down what they want. Optionally suggest 2-3 "
+    "specific angles they could pick from, based on the weak hits provided. "
+    "Do NOT cite any sources. Keep it short (under 80 words). Start with a "
+    "brief acknowledgement that you need more info."
+)
+
+# Score threshold below which we trigger clarification (cosine similarity, 0..1).
+# Empirically tuned for the current embedding model; expose later if needed.
+LOW_CONFIDENCE_THRESHOLD = 0.55
+
+
+def is_low_confidence(hits: list[SearchHit]) -> bool:
+    """Return True if retrieval confidence is too low to answer reliably."""
+    if not hits:
+        return True
+    top = max((h.score for h in hits), default=0.0)
+    return top < LOW_CONFIDENCE_THRESHOLD
+
+
 def _format_history(history: list[dict] | None, max_turns: int = 6) -> str:
     """Render recent conversation turns as plain text for prompt injection.
 
@@ -192,35 +215,43 @@ async def retrieve(
 async def answer(
     *, question: str, hits: list[SearchHit], llm: LLMProvider,
     history: list[dict] | None = None,
+    mode: str = "answer",
 ) -> str:
-    context = _format_context(hits) or "(no context found)"
+    context = _format_context(hits) or "(no relevant context found)"
     history_block = _format_history(history)
     parts = []
     if history_block:
         parts.append(f"PRIOR CONVERSATION (for reference resolution only):\n{history_block}")
     parts.append(f"QUESTION:\n{question}")
-    parts.append(f"CONTEXT:\n{context}")
+    if mode == "clarify":
+        parts.append(f"WEAK HITS (low confidence, for context only):\n{context}")
+        system = CLARIFY_SYSTEM_PROMPT
+    else:
+        parts.append(f"CONTEXT:\n{context}")
+        system = AGENT2_SYSTEM_PROMPT
     user = "\n\n".join(parts)
-    return await llm.complete(
-        system=AGENT2_SYSTEM_PROMPT, user=user, temperature=0.2
-    )
+    return await llm.complete(system=system, user=user, temperature=0.2)
 
 
 async def answer_stream(
     *, question: str, hits: list[SearchHit], llm: LLMProvider,
     history: list[dict] | None = None,
+    mode: str = "answer",
 ) -> AsyncIterator[str]:
-    context = _format_context(hits) or "(no context found)"
+    context = _format_context(hits) or "(no relevant context found)"
     history_block = _format_history(history)
     parts = []
     if history_block:
         parts.append(f"PRIOR CONVERSATION (for reference resolution only):\n{history_block}")
     parts.append(f"QUESTION:\n{question}")
-    parts.append(f"CONTEXT:\n{context}")
+    if mode == "clarify":
+        parts.append(f"WEAK HITS (low confidence, for context only):\n{context}")
+        system = CLARIFY_SYSTEM_PROMPT
+    else:
+        parts.append(f"CONTEXT:\n{context}")
+        system = AGENT2_SYSTEM_PROMPT
     user = "\n\n".join(parts)
-    async for chunk in llm.stream(
-        system=AGENT2_SYSTEM_PROMPT, user=user, temperature=0.2
-    ):
+    async for chunk in llm.stream(system=system, user=user, temperature=0.2):
         yield chunk
 
 

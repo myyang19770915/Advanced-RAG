@@ -112,6 +112,28 @@ class ChatResponse(BaseModel):
     session_id: str | None = None
 
 
+class ChatSessionSummary(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    message_count: int
+
+
+class ChatMessageOut(BaseModel):
+    id: str
+    role: str
+    content: str
+    citations: list[Citation] = []
+    created_at: str
+
+
+class ChatSessionDetail(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    messages: list[ChatMessageOut]
+
+
 # ---------- QC ----------
 class CoverageReport(BaseModel):
     project_id: str

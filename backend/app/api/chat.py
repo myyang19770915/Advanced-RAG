@@ -4,12 +4,20 @@ import json
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 
 from app.db.session import SessionDep, SessionLocal
-from app.models import Project
+from app.models import ChatMessage, ChatSession, Project
 from app.pipelines import step5_query
 from app.providers.factory import get_embedding, get_llm, get_vector_store
-from app.schemas import ChatRequest, ChatResponse, Citation
+from app.schemas import (
+    ChatMessageOut,
+    ChatRequest,
+    ChatResponse,
+    ChatSessionDetail,
+    ChatSessionSummary,
+    Citation,
+)
 from app.services.chat import (
     chat as chat_service,
     _hit_to_citation,
@@ -69,22 +77,73 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 vector_store=vector_store,
                 top_k=payload.top_k,
             )
-            citation_objs = [_hit_to_citation(h) for h in hits]
-            yield "event: citations\ndata: " + json.dumps(
-                [c.model_dump() for c in citation_objs]
+            low_conf = step5_query.is_low_confidence(hits)
+            mode = "clarify" if low_conf else "answer"
+            top_score = max((h.score for h in hits), default=0.0)
+            yield "event: meta\ndata: " + json.dumps(
+                {"mode": mode, "top_score": top_score, "threshold": step5_query.LOW_CONFIDENCE_THRESHOLD}
             ) + "\n\n"
+
+            citation_objs = [_hit_to_citation(h) for h in hits]
+            # In clarify mode, suppress citations from the UI (weak hits aren't sources).
+            citations_payload = [] if low_conf else [c.model_dump() for c in citation_objs]
+            yield "event: citations\ndata: " + json.dumps(citations_payload) + "\n\n"
 
             collected: list[str] = []
             async for token in step5_query.answer_stream(
-                question=payload.question, hits=hits, llm=llm, history=history,
+                question=payload.question, hits=hits, llm=llm,
+                history=history, mode=mode,
             ):
                 collected.append(token)
                 yield "event: token\ndata: " + json.dumps({"t": token}) + "\n\n"
 
             full_answer = "".join(collected)
+            # Persist actual citations regardless of UI suppression, so the
+            # next turn's history retains traceability.
             await persist_turn(
-                db, session_id, payload.question, full_answer, citation_objs
+                db, session_id, payload.question, full_answer,
+                [] if low_conf else citation_objs,
             )
             yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
+@router.get("/sessions/{session_id}", response_model=ChatSessionDetail)
+async def get_session(session_id: str, db: SessionDep) -> ChatSessionDetail:
+    session = await db.get(ChatSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    rows = (
+        await db.execute(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            .order_by(ChatMessage.created_at)
+        )
+    ).scalars().all()
+    messages = [
+        ChatMessageOut(
+            id=m.id,
+            role=m.role,
+            content=m.content,
+            citations=[Citation(**c) for c in (m.citations or [])],
+            created_at=m.created_at.isoformat(),
+        )
+        for m in rows
+    ]
+    return ChatSessionDetail(
+        id=session.id,
+        title=session.title,
+        created_at=session.created_at.isoformat(),
+        messages=messages,
+    )
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str, db: SessionDep) -> dict:
+    session = await db.get(ChatSession, session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="session not found")
+    await db.delete(session)
+    await db.commit()
+    return {"deleted": session_id}

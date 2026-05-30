@@ -118,9 +118,40 @@ export const TrainingAPI = {
     api.get<TrainingStatus>(`/projects/${pid}/training/status`).then(r => r.data),
 };
 
+export interface ChatSessionSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  message_count: number;
+}
+
+export interface ChatMessageOut {
+  id: string;
+  role: string;
+  content: string;
+  citations: Citation[];
+  created_at: string;
+}
+
+export interface ChatSessionDetail {
+  id: string;
+  title: string;
+  created_at: string;
+  messages: ChatMessageOut[];
+}
+
 export const ChatAPI = {
   ask: (project_id: string, question: string, session_id?: string) =>
     api.post<ChatResponse>('/chat', { project_id, question, session_id }).then(r => r.data),
+
+  listSessions: (project_id: string) =>
+    api.get<ChatSessionSummary[]>(`/projects/${project_id}/chat/sessions`).then(r => r.data),
+
+  getSession: (session_id: string) =>
+    api.get<ChatSessionDetail>(`/chat/sessions/${session_id}`).then(r => r.data),
+
+  deleteSession: (session_id: string) =>
+    api.delete(`/chat/sessions/${session_id}`),
 
   streamAsk: async (
     project_id: string,
@@ -128,6 +159,7 @@ export const ChatAPI = {
     session_id: string | undefined,
     callbacks: {
       onSession: (sid: string) => void;
+      onMeta?: (meta: { mode: 'answer' | 'clarify'; top_score: number; threshold: number }) => void;
       onCitations: (citations: Citation[]) => void;
       onToken: (token: string) => void;
       onDone: () => void;
@@ -161,6 +193,7 @@ export const ChatAPI = {
           else if (line.startsWith('data: ')) data = line.slice(6);
         }
         if (event === 'session') callbacks.onSession(JSON.parse(data).session_id);
+        else if (event === 'meta') callbacks.onMeta?.(JSON.parse(data));
         else if (event === 'citations') callbacks.onCitations(JSON.parse(data));
         else if (event === 'token') callbacks.onToken(JSON.parse(data).t);
         else if (event === 'done') callbacks.onDone();

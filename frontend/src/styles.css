@@ -156,9 +156,33 @@ th, td { padding: 0.5rem; border-bottom: 1px solid #e5e7eb; text-align: left; fo
 }
 
 /* ── Chat bubbles ── */
+.chat-area {
+  min-height: 300px;
+  max-height: 65vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
 .chat-bubble { padding: 0.75rem 1rem; border-radius: 10px; margin: 0.5rem 0; max-width: 82%; }
 .chat-bubble.user { background: #2563eb; color: #fff; margin-left: auto; }
 .chat-bubble.assistant { background: #fff; border: 1px solid #e5e7eb; }
+.chat-bubble.assistant.clarify {
+  background: #fffbeb;
+  border-color: #fcd34d;
+}
+
+/* ── Clarification badge ── */
+.clarify-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 4px;
+  padding: 2px 7px;
+  margin-bottom: 0.45rem;
+  display: inline-block;
+}
 
 /* ── Markdown content ── */
 .chat-md { line-height: 1.65; color: #1f2937; }
@@ -253,6 +277,7 @@ th, td { padding: 0.5rem; border-bottom: 1px solid #e5e7eb; text-align: left; fo
   align-items: center;
   justify-content: flex-end;
   margin-bottom: 0.5rem;
+  gap: 0.25rem;
 }
 .new-chat-btn {
   background: transparent;
@@ -264,3 +289,51 @@ th, td { padding: 0.5rem; border-bottom: 1px solid #e5e7eb; text-align: left; fo
   cursor: pointer;
 }
 .new-chat-btn:hover { background: #f3f4f6; color: #374151; }
+
+/* ── Sessions history panel ── */
+.sessions-panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.4rem;
+  margin-bottom: 0.75rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.1s;
+  position: relative;
+}
+.session-item:hover { background: #f3f4f6; }
+.session-item.active { background: #eff6ff; }
+.session-title {
+  flex: 1;
+  font-size: 0.85rem;
+  color: #374151;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-meta {
+  font-size: 0.72rem;
+  color: #9ca3af;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.session-delete {
+  background: transparent;
+  border: none;
+  color: #d1d5db;
+  font-size: 0.75rem;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.session-delete:hover { color: #ef4444; background: #fee2e2; }
