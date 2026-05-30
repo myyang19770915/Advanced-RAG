@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChatMessage, ChatSession, Project
@@ -49,40 +50,52 @@ def _hit_to_citation(hit) -> Citation:  # type: ignore[no-untyped-def]
     )
 
 
-async def chat(
-    *,
-    db: AsyncSession,
-    project: Project,
-    question: str,
-    top_k: int = 5,
-    session_id: str | None = None,
-) -> tuple[str, list[Citation], str]:
-    llm = get_llm()
-    embedding = get_embedding()
-    vector_store = get_vector_store()
+async def load_history(
+    db: AsyncSession, session_id: str, max_turns: int = 6
+) -> list[dict]:
+    """Return the most recent messages for a session as plain dicts.
 
-    answer, hits = await step5_query.run_query(
-        question=question,
-        collection=project.collection_name,
-        project_name=project.name,
-        llm=llm,
-        embedding=embedding,
-        vector_store=vector_store,
-        top_k=top_k,
-        available_taxonomy=await _get_taxonomy(project.collection_name, vector_store),
-    )
-    citations = [_hit_to_citation(h) for h in hits]
-
-    # Persist session/message
+    Returned in oldest-first order, limited to the last ``max_turns * 2``
+    rows (user+assistant pairs). Each item is ``{role, content}``.
+    """
     if not session_id:
-        session = ChatSession(
-            id=str(uuid.uuid4()),
-            project_id=project.id,
-            title=question[:80],
-        )
-        db.add(session)
-        await db.flush()
-        session_id = session.id
+        return []
+    stmt = (
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(max_turns * 2)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    # reverse to oldest-first
+    return [{"role": r.role, "content": r.content} for r in reversed(rows)]
+
+
+async def ensure_session(
+    db: AsyncSession, project_id: str, session_id: str | None, first_question: str
+) -> str:
+    """Return an existing session id or create a new one (without commit)."""
+    if session_id:
+        existing = await db.get(ChatSession, session_id)
+        if existing and existing.project_id == project_id:
+            return session_id
+    session = ChatSession(
+        id=str(uuid.uuid4()),
+        project_id=project_id,
+        title=first_question[:80],
+    )
+    db.add(session)
+    await db.flush()
+    return session.id
+
+
+async def persist_turn(
+    db: AsyncSession,
+    session_id: str,
+    question: str,
+    answer: str,
+    citations: list[Citation],
+) -> None:
     db.add(
         ChatMessage(
             id=str(uuid.uuid4()),
@@ -101,4 +114,35 @@ async def chat(
         )
     )
     await db.commit()
+
+
+async def chat(
+    *,
+    db: AsyncSession,
+    project: Project,
+    question: str,
+    top_k: int = 5,
+    session_id: str | None = None,
+) -> tuple[str, list[Citation], str]:
+    llm = get_llm()
+    embedding = get_embedding()
+    vector_store = get_vector_store()
+
+    history = await load_history(db, session_id) if session_id else []
+
+    answer, hits = await step5_query.run_query(
+        question=question,
+        collection=project.collection_name,
+        project_name=project.name,
+        llm=llm,
+        embedding=embedding,
+        vector_store=vector_store,
+        top_k=top_k,
+        available_taxonomy=await _get_taxonomy(project.collection_name, vector_store),
+        history=history,
+    )
+    citations = [_hit_to_citation(h) for h in hits]
+
+    session_id = await ensure_session(db, project.id, session_id, question)
+    await persist_turn(db, session_id, question, answer, citations)
     return answer, citations, session_id

@@ -13,9 +13,13 @@ from app.providers.vector_store import SearchHit, VectorStoreProvider
 
 _AGENT1_BASE_PROMPT = (
     "You are Agent1, the query planner / intent analyzer. Given a user "
-    "question, output a JSON object describing how to retrieve relevant "
-    "chunks. Output keys: rewritten_query (string), keywords (list), "
-    "filters (object).\n"
+    "question (and optional recent conversation), output a JSON object "
+    "describing how to retrieve relevant chunks. Output keys: "
+    "rewritten_query (string), keywords (list), filters (object).\n"
+    "IMPORTANT: If the question contains pronouns (it, they, this, that, 他, 它, 這個, 那個) "
+    "or is a follow-up (more, also, what about, 還有, 那麼), use the conversation history to "
+    "resolve references and produce a SELF-CONTAINED rewritten_query that can be understood "
+    "without the history.\n"
     "Return strictly JSON."
 )
 
@@ -61,8 +65,30 @@ AGENT2_SYSTEM_PROMPT = (
     "You are Agent2. Answer the user question using ONLY the provided "
     "context chunks. Always cite sources by their original_file and chunk "
     "index in the format [orig#idx]. If the answer is not in the context, "
-    "reply that you don't know. keywords: answer, context."
+    "reply that you don't know. You may use the prior conversation only to "
+    "understand what the user is referring to — do NOT cite the conversation "
+    "history as a source. keywords: answer, context."
 )
+
+
+def _format_history(history: list[dict] | None, max_turns: int = 6) -> str:
+    """Render recent conversation turns as plain text for prompt injection.
+
+    history: list of {role: 'user'|'assistant', content: str} ordered oldest-first.
+    Keeps only the last `max_turns` turns to bound prompt size.
+    """
+    if not history:
+        return ""
+    recent = history[-max_turns:]
+    lines = []
+    for msg in recent:
+        role = msg.get("role", "user")
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        lines.append(f"{label}: {content}")
+    return "\n".join(lines)
 
 
 @dataclass
@@ -106,11 +132,20 @@ async def plan_query(
     llm: LLMProvider,
     project_name: str | None = None,
     available_taxonomy: dict[str, list[str]] | None = None,
+    history: list[dict] | None = None,
 ) -> QueryPlan:
     prompt = _build_agent1_prompt(available_taxonomy)
+    history_block = _format_history(history)
+    if history_block:
+        user_msg = (
+            f"Recent conversation:\n{history_block}\n\n"
+            f"Current question: {question}"
+        )
+    else:
+        user_msg = question
     raw = await llm.complete(
         system=prompt,
-        user=question,
+        user=user_msg,
         temperature=0.0,
         response_format_json=False,
         json_schema=_PLAN_SCHEMA,
@@ -155,20 +190,34 @@ async def retrieve(
 
 
 async def answer(
-    *, question: str, hits: list[SearchHit], llm: LLMProvider
+    *, question: str, hits: list[SearchHit], llm: LLMProvider,
+    history: list[dict] | None = None,
 ) -> str:
     context = _format_context(hits) or "(no context found)"
-    user = f"QUESTION:\n{question}\n\nCONTEXT:\n{context}"
+    history_block = _format_history(history)
+    parts = []
+    if history_block:
+        parts.append(f"PRIOR CONVERSATION (for reference resolution only):\n{history_block}")
+    parts.append(f"QUESTION:\n{question}")
+    parts.append(f"CONTEXT:\n{context}")
+    user = "\n\n".join(parts)
     return await llm.complete(
         system=AGENT2_SYSTEM_PROMPT, user=user, temperature=0.2
     )
 
 
 async def answer_stream(
-    *, question: str, hits: list[SearchHit], llm: LLMProvider
+    *, question: str, hits: list[SearchHit], llm: LLMProvider,
+    history: list[dict] | None = None,
 ) -> AsyncIterator[str]:
     context = _format_context(hits) or "(no context found)"
-    user = f"QUESTION:\n{question}\n\nCONTEXT:\n{context}"
+    history_block = _format_history(history)
+    parts = []
+    if history_block:
+        parts.append(f"PRIOR CONVERSATION (for reference resolution only):\n{history_block}")
+    parts.append(f"QUESTION:\n{question}")
+    parts.append(f"CONTEXT:\n{context}")
+    user = "\n\n".join(parts)
     async for chunk in llm.stream(
         system=AGENT2_SYSTEM_PROMPT, user=user, temperature=0.2
     ):
@@ -185,12 +234,14 @@ async def run_query(
     vector_store: VectorStoreProvider,
     top_k: int = 5,
     available_taxonomy: dict[str, list[str]] | None = None,
+    history: list[dict] | None = None,
 ) -> tuple[str, list[SearchHit]]:
     plan = await plan_query(
         question=question,
         llm=llm,
         project_name=project_name,
         available_taxonomy=available_taxonomy,
+        history=history,
     )
     hits = await retrieve(
         plan=plan,
@@ -199,5 +250,5 @@ async def run_query(
         vector_store=vector_store,
         top_k=top_k,
     )
-    text = await answer(question=question, hits=hits, llm=llm)
+    text = await answer(question=question, hits=hits, llm=llm, history=history)
     return text, hits

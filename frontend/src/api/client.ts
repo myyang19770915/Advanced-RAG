@@ -125,7 +125,9 @@ export const ChatAPI = {
   streamAsk: async (
     project_id: string,
     question: string,
+    session_id: string | undefined,
     callbacks: {
+      onSession: (sid: string) => void;
       onCitations: (citations: Citation[]) => void;
       onToken: (token: string) => void;
       onDone: () => void;
@@ -135,7 +137,7 @@ export const ChatAPI = {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_id, question }),
+      body: JSON.stringify({ project_id, question, session_id }),
     });
     if (!resp.ok || !resp.body) {
       callbacks.onError(`HTTP ${resp.status}`);
@@ -158,7 +160,8 @@ export const ChatAPI = {
           if (line.startsWith('event: ')) event = line.slice(7);
           else if (line.startsWith('data: ')) data = line.slice(6);
         }
-        if (event === 'citations') callbacks.onCitations(JSON.parse(data));
+        if (event === 'session') callbacks.onSession(JSON.parse(data).session_id);
+        else if (event === 'citations') callbacks.onCitations(JSON.parse(data));
         else if (event === 'token') callbacks.onToken(JSON.parse(data).t);
         else if (event === 'done') callbacks.onDone();
         else if (event === 'error') callbacks.onError(data);

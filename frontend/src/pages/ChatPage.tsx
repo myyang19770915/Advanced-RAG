@@ -15,6 +15,7 @@ export default function ChatPage() {
   const { id } = useParams<{ id: string }>();
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [q, setQ] = useState('');
+  const [sessionId, setSessionId] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
 
@@ -26,7 +27,8 @@ export default function ChatPage() {
     setLoading(true);
     setStreaming(false);
     try {
-      await ChatAPI.streamAsk(id, question, {
+      await ChatAPI.streamAsk(id, question, sessionId, {
+        onSession: (sid) => setSessionId(sid),
         onCitations: (citations) => {
           setStreaming(true);
           setMsgs(m => [...m, { role: 'assistant', content: '', citations }]);
@@ -66,6 +68,7 @@ export default function ChatPage() {
 
   const newConversation = () => {
     setMsgs([]);
+    setSessionId(undefined);
     setQ('');
   };
 
