@@ -171,6 +171,22 @@ th, td { padding: 0.5rem; border-bottom: 1px solid #e5e7eb; text-align: left; fo
   border-color: #fcd34d;
 }
 
+/* ── Inline citation badge ── */
+.cite-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #1d4ed8;
+  background: #dbeafe;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  padding: 0px 5px;
+  margin: 0 2px;
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: default;
+}
+
 /* ── Clarification badge ── */
 .clarify-badge {
   font-size: 0.72rem;

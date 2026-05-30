@@ -5,6 +5,28 @@ import remarkGfm from 'remark-gfm';
 import { ChatAPI, Citation, ChatSessionSummary } from '../api/client';
 import ProjectNav from '../components/ProjectNav';
 
+// Regex: [filename#N] → styled badge
+const CITE_RE = /\[([^\]]+?)#(\d+)\]/g;
+
+function renderWithCiteBadges(children: React.ReactNode): React.ReactNode {
+  if (typeof children !== 'string') return children;
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  CITE_RE.lastIndex = 0;
+  while ((m = CITE_RE.exec(children)) !== null) {
+    if (m.index > last) parts.push(children.slice(last, m.index));
+    parts.push(
+      <span key={m.index} className="cite-badge" title={`${m[1]} chunk #${m[2]}`}>
+        {m[1].replace(/\.pdf$/i, '')} #{m[2]}
+      </span>
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < children.length) parts.push(children.slice(last));
+  return parts.length ? parts : children;
+}
+
 interface Msg {
   role: 'user' | 'assistant';
   content: string;
@@ -159,7 +181,14 @@ export default function ChatPage() {
             )}
             {m.role === 'assistant' ? (
               <div className="chat-md">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    p: ({ children }) => <p>{renderWithCiteBadges(children)}</p>,
+                    li: ({ children }) => <li>{renderWithCiteBadges(children)}</li>,
+                    td: ({ children }) => <td>{renderWithCiteBadges(children)}</td>,
+                  }}
+                >{m.content}</ReactMarkdown>
               </div>
             ) : (
               <div>{m.content}</div>

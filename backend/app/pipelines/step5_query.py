@@ -63,8 +63,9 @@ _PLAN_SCHEMA: dict = {
 
 AGENT2_SYSTEM_PROMPT = (
     "You are Agent2. Answer the user question using ONLY the provided "
-    "context chunks. Do NOT add inline citation markers. "
-    "If the answer is not in the context, "
+    "context chunks. Each chunk is tagged with [filename#chunk_index] at the "
+    "start. When citing a chunk, reproduce that exact tag inline, e.g. "
+    "[2501.17887v1.pdf#13]. If the answer is not in the context, "
     "reply that you don't know. You may use the prior conversation only to "
     "understand what the user is referring to — do NOT cite the conversation "
     "history as a source. keywords: answer, context."
