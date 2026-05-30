@@ -21,7 +21,7 @@ export default function ChatPage() {
   const [streaming, setStreaming] = useState(false);
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [sessionsOpen, setSessionsOpen] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const chatAreaRef = useRef<HTMLDivElement>(null);
 
   // Load sessions list
   const refreshSessions = async () => {
@@ -33,7 +33,8 @@ export default function ChatPage() {
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const el = chatAreaRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [msgs]);
 
   const send = async () => {
@@ -145,7 +146,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      <div className="card chat-area">
+      <div className="card chat-area" ref={chatAreaRef}>
         {msgs.length === 0 && (
           <p style={{ color: '#9ca3af', textAlign: 'center', margin: 'auto' }}>
             Ask anything about the documents in this project…
@@ -185,7 +186,6 @@ export default function ChatPage() {
             <span className="spinner dark" /> Thinking…
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
       <div className="card">
