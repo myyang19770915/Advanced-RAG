@@ -1,0 +1,44 @@
+version: "3.9"
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  backend:
+    build: ./backend
+    depends_on:
+      - qdrant
+    environment:
+      APP_ENV: prod
+      DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
+      VECTOR_STORE: qdrant
+      QDRANT_URL: http://qdrant:6333
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-mock}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-64}
+      DOCLING_PROVIDER: ${DOCLING_PROVIDER:-mock}
+      CORS_ORIGINS: "http://localhost,http://localhost:80"
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-change-me}
+    volumes:
+      - backend_data:/app/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  qdrant_data:
+  backend_data:

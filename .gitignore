@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# Project data (large/runtime)
+data/qdrant/
+data/uploads/
+data/chunks/
+data/markdown/
+data/reports/
+backend/data/uploads/
+backend/data/chunks/
+backend/data/markdown/
+*.db
+*.sqlite*
+
+# Logs
+*.log
