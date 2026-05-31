@@ -1,0 +1,17 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+data/uploads/
+data/chunks/
+data/markdown/
+data/qdrant/
+data/reports/
+*.db
+*.sqlite
+tests/
+.env
+.git/
