@@ -1,0 +1,49 @@
+# ==============================================================================
+# Qdrant PersistentVolumeClaim（對應 docker-compose: ./data/qdrant:/qdrant/storage）
+# ==============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qdrant-pvc
+  namespace: advanced-rag
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName: standard  # 依你的 K8s 環境調整，留空則使用預設 StorageClass
+---
+# ==============================================================================
+# Backend PersistentVolumeClaim（對應 docker-compose: ./backend/data:/app/data）
+# 包含：SQLite DB、上傳檔、chunks、markdown
+# 注意：使用 SQLite 時 backend replicas 必須為 1
+# ==============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data-pvc
+  namespace: advanced-rag
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName: standard
+---
+# ==============================================================================
+# fastembed cache PVC（BM25 模型，避免每次重啟重新下載）
+# ==============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fastembed-cache-pvc
+  namespace: advanced-rag
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName: standard

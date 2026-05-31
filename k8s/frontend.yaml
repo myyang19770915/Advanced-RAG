@@ -1,0 +1,60 @@
+# ==============================================================================
+# Frontend Deployment（nginx + React）
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: advanced-rag
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/myyang19770915/advanced-rag-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+---
+# ==============================================================================
+# Frontend Service
+# type: LoadBalancer  → 雲端環境（AWS/GCP/Azure）自動取得外部 IP
+# type: NodePort      → 裸機/minikube，用 <NodeIP>:<NodePort> 存取
+# type: ClusterIP     → 配合 Ingress 使用（推薦）
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: advanced-rag
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      # nodePort: 30080  # 只有 NodePort 才需要指定
+  type: LoadBalancer  # 依環境調整

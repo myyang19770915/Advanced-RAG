@@ -1,0 +1,94 @@
+# ==============================================================================
+# Backend Deployment
+# 注意：使用 SQLite，replicas 必須保持為 1
+#       若要水平擴展，需改用 PostgreSQL
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: advanced-rag
+  labels:
+    app: backend
+spec:
+  replicas: 1   # SQLite 限制，不可 > 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # initContainer：等待 Qdrant 就緒後再啟動 backend
+      initContainers:
+        - name: wait-for-qdrant
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until nc -z qdrant-service 6333; do
+                echo "Waiting for qdrant...";
+                sleep 3;
+              done
+      containers:
+        - name: backend
+          image: ghcr.io/myyang19770915/advanced-rag-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: rag-config
+            - secretRef:
+                name: rag-secrets
+          volumeMounts:
+            - name: backend-data
+              mountPath: /app/data
+            - name: fastembed-cache
+              mountPath: /root/.cache/fastembed
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 5
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "200m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+      volumes:
+        - name: backend-data
+          persistentVolumeClaim:
+            claimName: backend-data-pvc
+        - name: fastembed-cache
+          persistentVolumeClaim:
+            claimName: fastembed-cache-pvc
+---
+# ==============================================================================
+# Backend Service（ClusterIP，供 frontend nginx 反代）
+# ==============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: advanced-rag
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
