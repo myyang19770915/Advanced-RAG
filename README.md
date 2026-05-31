@@ -69,12 +69,54 @@ pytest -q          # 15 tests (unit + integration + full smoke flow)
 ```
 
 ### 用 Docker 一次起來
+
+> 需要 Docker 19.03+ 及 docker-compose v1.27+（或 `docker compose` plugin）。
+
 ```bash
-docker compose up --build
-# UI:      http://localhost
-# API:     http://localhost:8000/docs
-# Qdrant:  http://localhost:6333/dashboard
+# 1. 複製環境變數範本並填入設定
+cp .env.example .env
+# 編輯 .env，填入 LLM/Embedding/Rerank 的 base_url、api_key、model 名稱
+
+# 2. 第一次啟動（自動 build images + 啟動三個服務）
+sudo docker-compose up -d --build
+
+# 之後更新只需
+sudo docker-compose up -d
 ```
+
+**Port 對照表**
+
+| 服務 | Port | 說明 |
+|------|------|------|
+| 前端 UI | :80 | http://localhost |
+| 後端 API | :8000 | http://localhost:8000/docs |
+| Qdrant | :6333 | http://localhost:6333/dashboard |
+
+**資料持久化（bind mount）**
+
+| 容器路徑 | 主機路徑 | 內容 |
+|----------|----------|------|
+| `/qdrant/storage` | `./data/qdrant/` | 向量索引 |
+| `/app/data` | `./backend/data/` | SQLite DB、上傳檔、chunks、markdown |
+| `/root/.cache/fastembed` | Docker volume `fastembed_cache` | BM25 模型快取 |
+
+**健康檢查**
+
+```bash
+# 確認三個 container 都是 (healthy)
+sudo docker-compose ps
+
+# API 健康
+curl http://localhost/api/health
+
+# Qdrant collections
+curl http://localhost:6333/collections
+
+# 停止所有服務
+sudo docker-compose down
+```
+
+**注意**：BM25 sparse embedding 模型（`Qdrant/bm25`）已在 build 時預先下載進 image，首次啟動不需要等待下載。
 
 ## 切換到真實 LLM
 編輯 `backend/.env`：
