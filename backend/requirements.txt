@@ -12,6 +12,7 @@ numpy>=1.26
 fastembed>=0.8,<0.9   # for BM25 sparse vectors (hybrid search)
 docling>=2.0          # PDF to markdown conversion (LocalDocling provider)
 opencv-python-headless>=4.8  # image processing (headless, no GUI deps)
+openpyxl>=3.1         # XLSX QA dataset ingestion (step1b_qa_to_chunks)
 
 # dev
 pytest>=8.2

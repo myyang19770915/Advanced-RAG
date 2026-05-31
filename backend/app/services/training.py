@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.models import Document, Project, QaTest, Rule
 from app.pipelines import (
     step1_pdf_to_md,
+    step1b_qa_to_chunks,
     step2_md_to_json,
     step3_md_to_qa,
     step4_ingestion,
@@ -93,6 +94,48 @@ async def process_document(
     try:
         document.status = "converting"
         await db.commit()
+
+        # ── Branch: QA dataset (xlsx / csv) takes a direct path that skips
+        # step1 (PDF→MD) and step2 (MD→chunks). Each row becomes one chunk.
+        if step1b_qa_to_chunks.is_qa_file(document.stored_path):
+            document.status = "chunking"
+            await db.commit()
+            _chunk_progress[document.id] = {"done": 0, "total": 0}
+            chunks = await step1b_qa_to_chunks.qa_file_to_chunks(
+                Path(document.stored_path),
+                original_file=document.original_filename,
+                project_name=project.name,
+                output_dir=settings.chunks_dir,
+            )
+            _chunk_progress[document.id] = {"done": len(chunks), "total": len(chunks)}
+            # Seed QaTest table from the dataset itself (Q/A pairs are ground truth).
+            for c in chunks:
+                if c.question and c.answer:
+                    db.add(
+                        QaTest(
+                            id=str(uuid.uuid4()),
+                            project_id=project.id,
+                            document_id=document.id,
+                            question=c.question,
+                            expected_answer=c.answer,
+                        )
+                    )
+            document.status = "embedding"
+            await db.commit()
+            count = await step4_ingestion.embed_and_upsert(
+                chunks,
+                collection=project.collection_name,
+                embedding=embedding,
+                vector_store=vector_store,
+                document_id=document.id,
+                sparse_embedder=get_sparse_embedder(),
+            )
+            _chunk_progress.pop(document.id, None)
+            document.chunk_count = count
+            document.status = "ready"
+            invalidate_taxonomy_cache(project.collection_name)
+            await db.commit()
+            return
 
         # step1
         md_path = await step1_pdf_to_md.pdf_to_markdown(

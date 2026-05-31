@@ -208,5 +208,10 @@ class ChunkPayload(BaseModel):
     headings: list[str] = Field(default_factory=list)
     # Content type metadata derived from Docling doc_items[*].label.
     # primary_type ranks: picture > table > formula > code > heading > text.
+    # For QA-dataset chunks (xlsx/csv) primary_type == "qa".
     content_types: list[str] = Field(default_factory=list)
     primary_type: str = "text"
+    # QA-dataset specific fields (populated when source is xlsx/csv).
+    question: str = ""
+    answer: str = ""
+    row_no: int | None = None

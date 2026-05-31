@@ -118,9 +118,13 @@ async def delete_document(
     for path_str in [doc.stored_path, doc.markdown_path]:
         if path_str:
             Path(path_str).unlink(missing_ok=True)
-    # Chunks JSON: named after the markdown stem
+    # Chunks JSON: PDF/MD pipeline names it after the markdown stem;
+    # QA pipeline (xlsx/csv) names it after the stored file stem.
     if doc.markdown_path:
         chunks_file = settings.chunks_dir / (Path(doc.markdown_path).stem + ".chunks.json")
+        chunks_file.unlink(missing_ok=True)
+    elif doc.stored_path:
+        chunks_file = settings.chunks_dir / (Path(doc.stored_path).stem + ".chunks.json")
         chunks_file.unlink(missing_ok=True)
 
     # 3. Remove DB record (cascades to QaTest via Document.project relation)
@@ -183,11 +187,16 @@ async def chunk_location(document_id: str, chunk_index: int, db: SessionDep) -> 
     doc = await db.get(Document, document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="document not found")
-    if not doc.markdown_path:
+    # PDF/MD docs locate chunks via markdown_path; QA docs (xlsx/csv) via stored_path.
+    if doc.markdown_path:
+        md_path = Path(doc.markdown_path)
+        chunks_path = md_path.parent / (md_path.stem + ".chunks.json")
+    elif doc.stored_path:
+        from app.core.config import get_settings as _gs
+        stored = Path(doc.stored_path)
+        chunks_path = _gs().chunks_dir / (stored.stem + ".chunks.json")
+    else:
         raise HTTPException(status_code=404, detail="document not yet processed")
-
-    md_path = Path(doc.markdown_path)
-    chunks_path = md_path.parent / (md_path.stem + ".chunks.json")
     if not chunks_path.exists():
         raise HTTPException(status_code=404, detail="chunks file not found")
 
