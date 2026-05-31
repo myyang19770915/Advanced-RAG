@@ -16,8 +16,7 @@ spec:
 ---
 # ==============================================================================
 # Backend PersistentVolumeClaim（對應 docker-compose: ./backend/data:/app/data）
-# 包含：SQLite DB、上傳檔、chunks、markdown
-# 注意：使用 SQLite 時 backend replicas 必須為 1
+# 包含：上傳檔、chunks、markdown（SQLite DB 已移至 PostgreSQL）
 # ==============================================================================
 apiVersion: v1
 kind: PersistentVolumeClaim

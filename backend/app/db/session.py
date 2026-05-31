@@ -28,12 +28,13 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 async def init_db() -> None:
-    """Create tables. For MVP we skip Alembic."""
+    """Create tables and run lightweight schema migrations."""
     import re
     from pathlib import Path
 
-    # Ensure SQLite parent directory exists before first connection
     url = _settings.database_url
+
+    # SQLite only: ensure parent directory exists
     m = re.search(r"sqlite.*://+(.+)", url)
     if m:
         db_path = Path(m.group(1).lstrip("/"))
@@ -47,10 +48,13 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Migrate: add columns that may be missing from existing SQLite DBs
+    # Migrate: add columns that may be missing (database-agnostic via SQLAlchemy inspector)
+    from sqlalchemy import inspect as sa_inspect
+
     async with engine.connect() as conn:
-        result = await conn.execute(text("PRAGMA table_info(document)"))
-        existing_cols = {row[1] for row in result}
+        existing_cols = await conn.run_sync(
+            lambda sync_conn: {c["name"] for c in sa_inspect(sync_conn).get_columns("document")}
+        )
         if "version" not in existing_cols:
             await conn.execute(
                 text("ALTER TABLE document ADD COLUMN version INTEGER NOT NULL DEFAULT 1")

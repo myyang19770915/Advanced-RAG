@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["dev", "test", "prod"] = "dev"
-    database_url: str = "sqlite+aiosqlite:///./data/app.db"
+    database_url: str = "sqlite+aiosqlite:///./data/app.db"  # override with postgresql+asyncpg:// in prod
 
     # Vector store
     vector_store: Literal["memory", "qdrant"] = "memory"

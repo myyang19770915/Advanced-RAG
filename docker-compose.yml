@@ -1,6 +1,23 @@
 version: "3.9"
 
 services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ragdb
+      POSTGRES_USER: raguser
+      POSTGRES_PASSWORD: ragpass
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raguser -d ragdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
   qdrant:
     image: qdrant/qdrant:latest
     restart: unless-stopped
@@ -23,13 +40,15 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     # Load user-configurable settings from root .env
     # Docker-internal settings below override any matching keys in env_file
     env_file:
       - .env
     environment:
       APP_ENV: prod
-      DATABASE_URL: sqlite+aiosqlite:////app/data/app.db
+      DATABASE_URL: postgresql+asyncpg://raguser:ragpass@postgres:5432/ragdb
       VECTOR_STORE: qdrant
       QDRANT_URL: http://qdrant:6333
       DATA_DIR: /app/data
