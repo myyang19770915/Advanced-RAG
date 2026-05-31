@@ -90,21 +90,27 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 reranker=reranker,
                 retrieve_top_k=settings.retrieve_top_k,
             )
+            # QA fast path: trim to single citation, skip LLM in answer_stream.
+            is_qa_direct, _, qa_trimmed = step5_query.qa_direct(hits)
+            display_hits = qa_trimmed if is_qa_direct else hits
+
             low_conf = step5_query.is_low_confidence(hits)
             mode = "clarify" if low_conf else "answer"
             top_score = max((h.score for h in hits), default=0.0)
             yield "event: meta\ndata: " + json.dumps(
-                {"mode": mode, "top_score": top_score, "threshold": step5_query.LOW_CONFIDENCE_THRESHOLD}
+                {"mode": "qa_direct" if is_qa_direct else mode,
+                 "top_score": top_score,
+                 "threshold": step5_query.LOW_CONFIDENCE_THRESHOLD}
             ) + "\n\n"
 
-            citation_objs = [_hit_to_citation(h) for h in hits]
+            citation_objs = [_hit_to_citation(h) for h in display_hits]
             # In clarify mode, suppress citations from the UI (weak hits aren't sources).
             citations_payload = [] if low_conf else [c.model_dump() for c in citation_objs]
             yield "event: citations\ndata: " + json.dumps(citations_payload) + "\n\n"
 
             collected: list[str] = []
             async for token in step5_query.answer_stream(
-                question=payload.question, hits=hits, llm=llm,
+                question=payload.question, hits=display_hits, llm=llm,
                 history=history, mode=mode,
             ):
                 collected.append(token)

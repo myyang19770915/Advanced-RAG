@@ -1,4 +1,4 @@
-"""Unit tests for step1b QA dataset ingestion."""
+"""Unit tests for step1b QA dataset ingestion and qa_direct path."""
 
 from __future__ import annotations
 
@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from app.pipelines import step1b_qa_to_chunks
+from app.pipelines.step5_query import qa_direct, QA_CONFIDENCE_THRESHOLD
+from app.providers.vector_store import SearchHit
 
 
 @pytest.mark.asyncio
@@ -27,8 +29,8 @@ async def test_csv_basic(tmp_path: Path) -> None:
     assert len(chunks) == 2
 
     c0 = chunks[0]
-    assert c0.text.startswith("Q: 請假怎麼申請?")
-    assert "A: 至 HCP 系統申請。" in c0.text
+    # text should be Q-only for embedding (not Q+A mixture)
+    assert c0.text == "請假怎麼申請?"
     assert c0.l1 == "考勤管理"
     assert c0.l2 == "請假"
     assert c0.primary_type == "qa"
@@ -86,3 +88,62 @@ def test_is_qa_file() -> None:
     assert step1b_qa_to_chunks.is_qa_file(Path("a.XLS"))
     assert not step1b_qa_to_chunks.is_qa_file("a.pdf")
     assert not step1b_qa_to_chunks.is_qa_file("a.md")
+
+
+# ── qa_direct() ──────────────────────────────────────────────────────────────
+
+def _make_hit(score: float, primary_type: str = "qa", answer: str = "raw answer") -> SearchHit:
+    return SearchHit(
+        id="abc",
+        score=score,
+        payload={
+            "primary_type": primary_type,
+            "question": "問題?",
+            "answer": answer,
+            "text": "問題?",
+            "original_file": "qa.xlsx",
+            "chunk_index": 0,
+        },
+    )
+
+
+def test_qa_direct_high_confidence() -> None:
+    hit = _make_hit(score=QA_CONFIDENCE_THRESHOLD + 0.01)
+    is_direct, text, trimmed = qa_direct([hit])
+    assert is_direct is True
+    assert text == "raw answer"
+    assert len(trimmed) == 1
+
+
+def test_qa_direct_below_threshold() -> None:
+    hit = _make_hit(score=QA_CONFIDENCE_THRESHOLD - 0.01)
+    is_direct, text, trimmed = qa_direct([hit])
+    assert is_direct is False
+    assert text == ""
+    assert len(trimmed) == 1  # original list unchanged
+
+
+def test_qa_direct_non_qa_chunk() -> None:
+    hit = _make_hit(score=0.99, primary_type="text")
+    is_direct, _, _ = qa_direct([hit])
+    assert is_direct is False
+
+
+def test_qa_direct_empty_hits() -> None:
+    is_direct, text, trimmed = qa_direct([])
+    assert is_direct is False
+    assert trimmed == []
+
+
+def test_qa_direct_trims_to_single_citation() -> None:
+    """When QA direct fires, only the top hit is returned regardless of list size."""
+    hits = [
+        _make_hit(score=0.95, answer="first answer"),
+        _make_hit(score=0.82, answer="second answer"),
+        _make_hit(score=0.70, answer="third answer"),
+    ]
+    is_direct, text, trimmed = qa_direct(hits)
+    assert is_direct is True
+    assert text == "first answer"
+    assert len(trimmed) == 1
+    assert trimmed[0].payload["answer"] == "first answer"

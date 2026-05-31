@@ -169,7 +169,11 @@ async def qa_file_to_chunks(
             row_no: int | None = int(float(raw_row_id)) if raw_row_id else i
         except ValueError:
             row_no = i
-        text = f"Q: {q}\nA: {a}"
+        # Embed Q only: user queries are question-shaped, so Q-only vectors
+        # align better with the query embedding than a Q+A mixture.
+        # The full answer is stored in the 'answer' payload field and returned
+        # verbatim when confidence is high (see step5_query.qa_direct).
+        text = q
         tags = [t for t in [l1, l2] if t and t.upper() != "N/A"]
         chunks.append(
             ChunkPayload(

@@ -90,6 +90,10 @@ CLARIFY_SYSTEM_PROMPT = (
 # Empirically tuned for the current embedding model; expose later if needed.
 LOW_CONFIDENCE_THRESHOLD = 0.55
 
+# QA dataset: when the top hit is a qa chunk and score >= this, return the
+# stored answer verbatim, skipping the LLM entirely.
+QA_CONFIDENCE_THRESHOLD = 0.75
+
 
 def is_low_confidence(hits: list[SearchHit]) -> bool:
     """Return True if retrieval confidence is too low to answer reliably."""
@@ -97,6 +101,29 @@ def is_low_confidence(hits: list[SearchHit]) -> bool:
         return True
     top = max((h.score for h in hits), default=0.0)
     return top < LOW_CONFIDENCE_THRESHOLD
+
+
+def qa_direct(hits: list[SearchHit]) -> tuple[bool, str, list[SearchHit]]:
+    """Check whether the top hit is a high-confidence QA chunk.
+
+    Returns (is_direct, answer_text, trimmed_hits).
+
+    When is_direct=True:
+    - answer_text is the raw answer stored in the payload (return verbatim).
+    - trimmed_hits contains only the single top hit (one citation is enough).
+    The LLM is skipped entirely; answer faithfulness is 100%.
+    """
+    if not hits:
+        return False, "", hits
+    top = hits[0]
+    p = top.payload or {}
+    if (
+        str(p.get("primary_type", "")) == "qa"
+        and float(top.score) >= QA_CONFIDENCE_THRESHOLD
+        and p.get("answer")
+    ):
+        return True, str(p["answer"]), [top]
+    return False, "", hits
 
 
 def _format_history(history: list[dict] | None, max_turns: int = 6) -> str:
@@ -150,7 +177,17 @@ def _format_context(hits: list[SearchHit]) -> str:
     for h in hits:
         payload = h.payload or {}
         tag = f"[{payload.get('original_file','?')}#{payload.get('chunk_index',0)}]"
-        lines.append(f"{tag} {payload.get('text','')}")
+        # For QA chunks, embed only Q but reconstruct Q+A for the LLM fallback
+        # context so Agent2 still has the full answer when confidence is borderline.
+        if (
+            payload.get("primary_type") == "qa"
+            and payload.get("question")
+            and payload.get("answer")
+        ):
+            text = f"Q: {payload['question']}\nA: {payload['answer']}"
+        else:
+            text = payload.get("text", "")
+        lines.append(f"{tag} {text}")
     return "\n---\n".join(lines)
 
 
@@ -283,6 +320,10 @@ async def answer(
     history: list[dict] | None = None,
     mode: str = "answer",
 ) -> str:
+    # High-confidence QA hit → return stored answer verbatim, no LLM call.
+    is_direct, verbatim, _ = qa_direct(hits)
+    if is_direct:
+        return verbatim
     context = _format_context(hits) or "(no relevant context found)"
     history_block = _format_history(history)
     parts = []
@@ -304,6 +345,11 @@ async def answer_stream(
     history: list[dict] | None = None,
     mode: str = "answer",
 ) -> AsyncIterator[str]:
+    # High-confidence QA hit → yield stored answer verbatim in one shot.
+    is_direct, verbatim, _ = qa_direct(hits)
+    if is_direct:
+        yield verbatim
+        return
     context = _format_context(hits) or "(no relevant context found)"
     history_block = _format_history(history)
     parts = []
@@ -353,5 +399,9 @@ async def run_query(
         reranker=reranker,
         retrieve_top_k=retrieve_top_k,
     )
+    # QA fast path: skip LLM, return verbatim answer + single citation.
+    is_direct, verbatim, qa_hits = qa_direct(hits)
+    if is_direct:
+        return verbatim, qa_hits
     text = await answer(question=question, hits=hits, llm=llm, history=history)
     return text, hits
