@@ -86,13 +86,16 @@ CLARIFY_SYSTEM_PROMPT = (
     "IMPORTANT: Always respond in Traditional Chinese (繁體中文)."
 )
 
-# Score threshold below which we trigger clarification (cosine similarity, 0..1).
-# Empirically tuned for the current embedding model; expose later if needed.
-LOW_CONFIDENCE_THRESHOLD = 0.55
+# Score threshold below which we trigger clarification.
+# NOTE: scores are now Cohere rerank-v3.5 relevance scores (calibrated probabilities),
+# not cosine similarity. v3.5 caps near 0.75 for exact matches and ~0.65 for
+# strong paraphrases; irrelevant docs collapse below 0.1. Adjust accordingly.
+LOW_CONFIDENCE_THRESHOLD = 0.30
 
 # QA dataset: when the top hit is a qa chunk and score >= this, return the
 # stored answer verbatim, skipping the LLM entirely.
-QA_CONFIDENCE_THRESHOLD = 0.75
+# Lowered for rerank-v3.5 scoring distribution (exact match ~0.75).
+QA_CONFIDENCE_THRESHOLD = 0.60
 
 
 def is_low_confidence(hits: list[SearchHit]) -> bool:
@@ -219,27 +222,16 @@ async def plan_query(
     if project_name:
         plan.filters.setdefault("project_name", project_name)
 
-    # Taxonomy filter strategy: l2/l3 are too granular and regularly cause
-    # false-negative exclusions (e.g. a paper tagged "Research Papers" gets
-    # excluded by a filter for "Document Processing"). Always strip l2/l3.
-    # Only apply l1 when it matches exactly one taxonomy value AND there is
-    # only one l1 value in the collection (otherwise the filter is ambiguous).
-    for key in ("l2", "l3"):
-        plan.filters.pop(key, None)
-
-    if available_taxonomy and any(available_taxonomy.values()):
-        l1_known = available_taxonomy.get("l1", [])
-        l1_val = plan.filters.get("l1")
-        if l1_val:
-            canonical = next((k for k in l1_known if k.lower() == l1_val.lower()), None)
-            if canonical and len(l1_known) > 1:
-                # Multiple l1 categories exist → keep the filter to narrow scope
-                plan.filters["l1"] = canonical
-            else:
-                # Only one l1 category or no match → filter adds no value / risks exclusion
-                plan.filters.pop("l1", None)
-    else:
-        plan.filters.pop("l1", None)
+    # Filter safety: only allow known safe keys.
+    # l1/l2/l3 taxonomy filters regularly cause false-negative exclusions:
+    # the LLM picks the wrong category (e.g. '員工關係、考勤管理' instead of
+    # '考勤管理') and the correct chunks are excluded entirely.
+    # Unknown fields (e.g. 'topic', 'type') invented by the LLM would also
+    # filter out everything. Keep only project_name and primary_type.
+    _ALLOWED_FILTERS: set[str] = {"project_name", "primary_type"}
+    for key in list(plan.filters.keys()):
+        if key not in _ALLOWED_FILTERS:
+            plan.filters.pop(key, None)
 
     return plan
 

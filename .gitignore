@@ -32,3 +32,4 @@ backend/.env
 
 # Logs
 *.log
+docs/FQAv0.xlsx

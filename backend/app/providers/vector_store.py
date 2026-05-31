@@ -229,6 +229,8 @@ class QdrantVectorStore:
         self._client = AsyncQdrantClient(url=url, api_key=api_key or None)
         # Cache "is this collection hybrid?" lookups (cleared on ensure/delete).
         self._hybrid_cache: dict[str, bool] = {}
+        # Cache whether the collection uses named vectors (dense-only or hybrid).
+        self._named_cache: dict[str, bool] = {}
 
     async def _is_hybrid(self, name: str) -> bool:
         """Return True if collection uses named ``dense`` + sparse layout."""
@@ -245,9 +247,17 @@ class QdrantVectorStore:
                 SPARSE_VECTOR_NAME in (params.sparse_vectors or {})
             hybrid = bool(is_named and has_sparse)
         except Exception:  # noqa: BLE001
+            is_named = False
             hybrid = False
+        self._named_cache[name] = is_named  # type: ignore[possibly-undefined]
         self._hybrid_cache[name] = hybrid
         return hybrid
+
+    async def _is_named(self, name: str) -> bool:
+        """Return True if collection uses named vectors (dense-only or hybrid)."""
+        if name not in self._named_cache:
+            await self._is_hybrid(name)  # populates both caches
+        return self._named_cache.get(name, False)
 
     async def ensure_collection(
         self, name: str, dim: int, *, sparse: bool = False
@@ -274,12 +284,14 @@ class QdrantVectorStore:
                 },
             )
             self._hybrid_cache[name] = True
+            self._named_cache[name] = True
         else:
             await self._client.create_collection(
                 collection_name=name,
                 vectors_config=qm.VectorParams(size=dim, distance=qm.Distance.COSINE),
             )
             self._hybrid_cache[name] = False
+            self._named_cache[name] = False
 
     async def upsert(self, collection: str, points: list[VectorPoint]) -> int:
         from qdrant_client.http import models as qm
@@ -325,15 +337,12 @@ class QdrantVectorStore:
         """Pure dense search.  Works against both legacy and hybrid collections."""
         from qdrant_client.http import models as qm  # noqa: F401  (kept for parity)
 
-        hybrid = await self._is_hybrid(collection)
-        query_arg: Any
-        using: str | None
-        if hybrid:
-            query_arg = vector
-            using = DENSE_VECTOR_NAME
-        else:
-            query_arg = vector
-            using = None
+        # Use named vector key whenever the collection schema uses named vectors
+        # (both dense-only and hybrid layouts). Fall back to None only for truly
+        # legacy unnamed-vector collections.
+        is_named = await self._is_named(collection)
+        query_arg: Any = vector
+        using: str | None = DENSE_VECTOR_NAME if is_named else None
 
         kwargs: dict[str, Any] = dict(
             collection_name=collection,
@@ -425,6 +434,7 @@ class QdrantVectorStore:
 
     async def delete_collection(self, collection: str) -> None:
         self._hybrid_cache.pop(collection, None)
+        self._named_cache.pop(collection, None)
         await self._client.delete_collection(collection_name=collection)
 
     async def get_unique_field_values(
