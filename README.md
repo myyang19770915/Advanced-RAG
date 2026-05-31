@@ -172,3 +172,73 @@ tests/
 - CORS 由 `CORS_ORIGINS` 控制；正式環境請勿用 `*`。
 - 上傳檔名以 `pathlib.Path(...).name` 去除路徑成分，避免路徑穿越。
 - LLM prompt 使用 system / user 分離，並要求 JSON 物件回應，降低注入風險。
+
+---
+
+## 變更記錄
+
+### 2026-05-31 — Async 阻塞修正（K8S liveness probe timeout）（commit `6e6b462`）
+
+**問題**：`LocalDoclingProvider._convert()` 及多處同步 I/O 直接在 `async` 函式中呼叫，導致整個 asyncio event loop 被阻塞，FastAPI 無法於 CPU-密集作業（Docling 轉換、HybridChunker）期間回應 K8s liveness/readiness probe，造成 pod 被強制重啟。
+
+**修正方式**：所有同步 CPU 密集 / 大型 I/O 呼叫以 `asyncio.to_thread(...)` 卸載至 thread pool worker（Python 3.9+ 標準庫，無新增套件）。
+
+**涵蓋檔案**：
+
+| 檔案 | 修正內容 |
+|------|----------|
+| `app/providers/docling.py` | `LocalDocling._convert`（torch/docling ML pipeline）、`export_to_markdown`、`export_to_dict`、圖片抽取/描述注入、`HttpDocling` 檔案讀取 |
+| `app/pipelines/step1_pdf_to_md.py` | markdown / doc.json / images.json 檔案寫入 |
+| `app/pipelines/step2_md_to_json.py` | **`HybridChunker.chunk`**（CPU-heavy）、`DoclingDocument.model_validate`、markdown 讀取、chunks.json 寫入 |
+| `app/pipelines/step3_md_to_qa.py` | markdown 讀取 |
+| `app/api/documents.py` | 上傳 `write_bytes`、chunk location `read_text` |
+| `app/services/rules.py` | 範例 markdown 讀取 |
+
+單元測試 10/10 通過，本地容器重啟後 `/api/health` 回應正常。
+
+---
+
+### 2026-05-31 — Dockerfile 強制安裝 opencv-python-headless（commit `ade6f65`）
+
+**問題**：`docling` 依賴 `rapidocr`，transitively 拉入 `opencv-python`（GUI 版），在 `python:3.12-slim` 中缺少 `libxcb.so.1`，導致 import 時 `ImportError`：
+
+```
+libxcb.so.1: cannot open shared object file: No such file or directory
+```
+
+**修正**：在 `pip install -r requirements.txt` 之後加入強制替換步驟：
+
+```dockerfile
+RUN pip uninstall -y opencv-python opencv-python-headless 2>/dev/null; \
+    pip install --no-cache-dir opencv-python-headless
+```
+
+確保最終 image 中只存在 headless 版本，不依賴 X11/libxcb。
+
+---
+
+### 2026-05-31 — 新增 opencv-python-headless 至 requirements.txt（commit `9cb3304`）
+
+`requirements.txt` 新增 `opencv-python-headless>=4.8`，明確聲明 headless 依賴，避免 `docling` → `rapidocr` 自動拉入 GUI 版 opencv。
+
+---
+
+### 2026-05 — 資料庫切換至 PostgreSQL 17
+
+- `docker-compose.yml` 新增 `postgres` service，backend 設定 `DATABASE_URL` 指向 PostgreSQL 17。
+- SQLAlchemy async engine 改用 `asyncpg` driver。
+- `requirements.txt` 新增 `asyncpg`、`psycopg2-binary`。
+
+---
+
+### 2026-05 — 新增 Docling 本地 PDF 轉換支援
+
+- `requirements.txt` 新增 `docling>=2.0`。
+- `DOCLING_PROVIDER=local` 時使用 `LocalDoclingProvider`，於容器內執行 torch-based PDF → Markdown 轉換，無需外部 API。
+- Build 時預先下載 BM25 sparse embedding 模型（`Qdrant/bm25`），首次啟動不需等待。
+
+---
+
+### 2026-05 — Frontend nginx .mjs MIME type 修正
+
+- `frontend/nginx.conf` 新增 `.mjs` → `application/javascript` MIME 對應，修正瀏覽器載入 ES module 時 MIME type 錯誤的問題。
