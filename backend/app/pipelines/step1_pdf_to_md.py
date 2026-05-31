@@ -94,7 +94,7 @@ async def pdf_to_markdown(
                 logger.warning("step1: inject_picture_descriptions failed: %s", exc)
 
     md_path = output_dir / (pdf_path.stem + ".md")
-    md_path.write_text(md_text, encoding="utf-8")
+    await asyncio.to_thread(md_path.write_text, md_text, encoding="utf-8")
 
     # 3. Persist final DoclingDocument JSON (after caption injection)
     try:
@@ -103,8 +103,10 @@ async def pdf_to_markdown(
         doc_json = None
     if doc_json is not None:
         doc_json_path = output_dir / (pdf_path.stem + ".doc.json")
-        doc_json_path.write_text(
-            json.dumps(doc_json, ensure_ascii=False), encoding="utf-8"
+        await asyncio.to_thread(
+            doc_json_path.write_text,
+            json.dumps(doc_json, ensure_ascii=False),
+            encoding="utf-8",
         )
 
     # 4. Persist images.json for debug / future UI features.
@@ -122,8 +124,10 @@ async def pdf_to_markdown(
             for p in pictures
         ]
         images_json_path = output_dir / (pdf_path.stem + ".images.json")
-        images_json_path.write_text(
-            json.dumps(images_meta, ensure_ascii=False, indent=2), encoding="utf-8"
+        await asyncio.to_thread(
+            images_json_path.write_text,
+            json.dumps(images_meta, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
 
     return md_path

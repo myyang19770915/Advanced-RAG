@@ -11,6 +11,7 @@ Strategy:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -340,8 +341,10 @@ async def _chunks_from_docling_json(
     from docling.chunking import HybridChunker  # type: ignore
     from docling_core.types.doc import DoclingDocument  # type: ignore
 
-    raw = json.loads(doc_json_path.read_text(encoding="utf-8"))
-    doc = DoclingDocument.model_validate(raw)
+    # Reading + parsing a large DoclingDocument JSON is sync-heavy; offload it.
+    raw_text = await asyncio.to_thread(doc_json_path.read_text, encoding="utf-8")
+    raw = json.loads(raw_text)
+    doc = await asyncio.to_thread(DoclingDocument.model_validate, raw)
 
     # Cache page dimensions: page_no -> (width, height) in PDF points.
     page_sizes: dict[int, tuple[float, float]] = {}
@@ -354,7 +357,10 @@ async def _chunks_from_docling_json(
         pass
 
     chunker = HybridChunker()
-    chunks_iter = list(chunker.chunk(doc))
+    # HybridChunker.chunk() is CPU-bound and may run for seconds on large
+    # documents — offload so the FastAPI event loop (and K8s health probes)
+    # stay responsive.
+    chunks_iter = await asyncio.to_thread(lambda: list(chunker.chunk(doc)))
     total = len(chunks_iter)
     if progress_callback:
         progress_callback(0, total)
@@ -452,7 +458,8 @@ async def _chunks_from_docling_json(
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
         out_path = output_dir / (md_path.stem + ".chunks.json")
-        out_path.write_text(
+        await asyncio.to_thread(
+            out_path.write_text,
             json.dumps([c.model_dump() for c in out], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -487,7 +494,7 @@ async def markdown_to_chunks(
                 "step2: docling-native chunking failed (%s), falling back to LLM split", exc
             )
 
-    markdown = md_path.read_text(encoding="utf-8")
+    markdown = await asyncio.to_thread(md_path.read_text, encoding="utf-8")
     prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     sections = _split_into_sections(markdown)
     total = len(sections)
@@ -521,7 +528,8 @@ async def markdown_to_chunks(
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
         out_path = output_dir / (md_path.stem + ".chunks.json")
-        out_path.write_text(
+        await asyncio.to_thread(
+            out_path.write_text,
             json.dumps([c.model_dump() for c in all_chunks], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -119,18 +120,25 @@ class LocalDocling:
         return result.document
 
     async def to_markdown(self, pdf_path: Path) -> str:
-        doc = self._convert(pdf_path)
-        return doc.export_to_markdown()
+        # _convert() runs the docling ML pipeline (CPU heavy, seconds-to-minutes).
+        # Offload to a worker thread so the FastAPI event loop stays responsive
+        # (otherwise K8s liveness/readiness probes time out).
+        doc = await asyncio.to_thread(self._convert, pdf_path)
+        return await asyncio.to_thread(doc.export_to_markdown)
 
     async def to_docling_json(self, pdf_path: Path) -> dict | None:
-        doc = self._convert(pdf_path)
+        doc = await asyncio.to_thread(self._convert, pdf_path)
         try:
-            return doc.export_to_dict()
+            return await asyncio.to_thread(doc.export_to_dict)
         except Exception:  # noqa: BLE001
             return None
 
     async def extract_pictures(self, pdf_path: Path) -> list[ExtractedPicture]:
-        doc = self._convert(pdf_path)
+        doc = await asyncio.to_thread(self._convert, pdf_path)
+        return await asyncio.to_thread(self._extract_pictures_sync, doc)
+
+    @staticmethod
+    def _extract_pictures_sync(doc) -> list["ExtractedPicture"]:  # noqa: ANN001
         import io as _io
 
         pics: list[ExtractedPicture] = []
@@ -204,7 +212,16 @@ class LocalDocling:
         """Attach a PictureDescriptionData annotation to each picture, then
         re-export markdown (which will include the description inline) and json.
         """
-        doc = self._convert(pdf_path)
+        doc = await asyncio.to_thread(self._convert, pdf_path)
+        return await asyncio.to_thread(
+            self._inject_descriptions_sync, doc, descriptions
+        )
+
+    @staticmethod
+    def _inject_descriptions_sync(
+        doc,  # noqa: ANN001
+        descriptions: dict[str, str],
+    ) -> tuple[str, dict | None]:
         if descriptions:
             try:
                 from docling_core.types.doc.document import (  # type: ignore
@@ -240,6 +257,7 @@ class LocalDocling:
         return md, js
 
 
+
 class HttpDocling:
     """Calls a remote Docling-compatible HTTP service."""
 
@@ -249,8 +267,9 @@ class HttpDocling:
     async def to_markdown(self, pdf_path: Path) -> str:
         import httpx
 
-        with pdf_path.open("rb") as f:
-            files = {"file": (pdf_path.name, f.read(), "application/pdf")}
+        # Offload sync file read to a thread; large PDFs can block event loop.
+        content = await asyncio.to_thread(pdf_path.read_bytes)
+        files = {"file": (pdf_path.name, content, "application/pdf")}
         async with httpx.AsyncClient(timeout=300) as client:
             resp = await client.post(f"{self._url}/convert", files=files)
             resp.raise_for_status()

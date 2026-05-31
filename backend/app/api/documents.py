@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -62,7 +63,8 @@ async def upload_documents(
         doc_id = str(uuid.uuid4())
         stored = proj_dir / f"{doc_id}__{safe_name}"
         content = await f.read()
-        stored.write_bytes(content)
+        # write_bytes is blocking; offload large uploads to a worker thread.
+        await asyncio.to_thread(stored.write_bytes, content)
         doc = Document(
             id=doc_id,
             project_id=project_id,
@@ -189,7 +191,8 @@ async def chunk_location(document_id: str, chunk_index: int, db: SessionDep) -> 
     if not chunks_path.exists():
         raise HTTPException(status_code=404, detail="chunks file not found")
 
-    chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+    chunks_raw = await asyncio.to_thread(chunks_path.read_text, encoding="utf-8")
+    chunks = json.loads(chunks_raw)
     for c in chunks:
         if int(c.get("chunk_index", -1)) == chunk_index:
             return {

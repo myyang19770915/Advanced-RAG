@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -45,7 +46,8 @@ async def build_candidates(
     samples = []
     for p in sample_markdowns[:3]:
         if p.exists():
-            samples.append(f"### {p.name}\n" + p.read_text(encoding="utf-8")[:2000])
+            text = await asyncio.to_thread(p.read_text, encoding="utf-8")
+            samples.append(f"### {p.name}\n" + text[:2000])
     user = f"DOMAIN HINT: {domain_hint or '(none)'}\n\nSAMPLES:\n" + "\n\n".join(samples)
     raw = await llm.complete(
         system=RULE_BUILDER_SYSTEM,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -51,7 +52,7 @@ _QA_SCHEMA: dict = {
 
 
 async def generate_qa(md_path: Path, *, llm: LLMProvider) -> list[dict]:
-    markdown = md_path.read_text(encoding="utf-8")
+    markdown = await asyncio.to_thread(md_path.read_text, encoding="utf-8")
     # Send only first 4000 chars to avoid context overflow
     content = markdown[:4000]
     raw = await llm.complete(
