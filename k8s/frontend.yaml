@@ -18,6 +18,8 @@ spec:
       labels:
         app: frontend
     spec:
+      imagePullSecrets:
+        - name: ghcr-secret
       containers:
         - name: frontend
           image: ghcr.io/myyang19770915/advanced-rag-frontend:latest
