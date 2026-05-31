@@ -42,11 +42,18 @@ export interface TrainingStatus {
 }
 
 export interface Citation {
+  document_id?: string | null;
   original_file: string;
   chunk_index: number;
   score: number;
   text_preview: string;
-  download_url?: string;
+  download_url?: string | null;
+  page?: number | null;
+  bbox?: number[] | null;
+  page_width?: number | null;
+  page_height?: number | null;
+  content_types?: string[] | null;
+  primary_type?: string | null;
 }
 
 export interface ChatResponse {

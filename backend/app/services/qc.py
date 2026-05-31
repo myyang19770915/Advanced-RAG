@@ -7,7 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Document, Project, QaTest
 from app.pipelines import step3b_quality_gate, step5_query
-from app.providers.factory import get_embedding, get_llm, get_vector_store
+from app.providers.factory import (
+    get_embedding,
+    get_llm,
+    get_reranker,
+    get_sparse_embedder,
+    get_vector_store,
+)
 from app.schemas import AuditReport, AuditResult, CoverageReport
 
 
@@ -39,6 +45,10 @@ async def audit(db: AsyncSession, project: Project, *, limit: int = 10) -> Audit
     llm = get_llm()
     embedding = get_embedding()
     vector_store = get_vector_store()
+    sparse_embedder = get_sparse_embedder()
+    reranker = get_reranker()
+    from app.core.config import get_settings
+    settings = get_settings()
 
     q = await db.execute(
         select(QaTest)
@@ -57,7 +67,10 @@ async def audit(db: AsyncSession, project: Project, *, limit: int = 10) -> Audit
             llm=llm,
             embedding=embedding,
             vector_store=vector_store,
-            top_k=5,
+            top_k=settings.final_top_n,
+            sparse_embedder=sparse_embedder,
+            reranker=reranker,
+            retrieve_top_k=settings.retrieve_top_k,
         )
         verdict = await step3b_quality_gate.judge(
             question=t.question,

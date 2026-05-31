@@ -18,7 +18,14 @@ from app.pipelines import (
     step3_md_to_qa,
     step4_ingestion,
 )
-from app.providers.factory import get_docling, get_embedding, get_llm, get_vector_store
+from app.providers.factory import (
+    get_docling,
+    get_embedding,
+    get_llm,
+    get_sparse_embedder,
+    get_vector_store,
+    get_vlm,
+)
 from app.services.chat import invalidate_taxonomy_cache
 
 logger = logging.getLogger(__name__)
@@ -79,6 +86,7 @@ async def process_document(
     settings = get_settings()
     docling = get_docling()
     llm = get_llm()
+    vlm = get_vlm()
     embedding = get_embedding()
     vector_store = get_vector_store()
 
@@ -88,7 +96,7 @@ async def process_document(
 
         # step1
         md_path = await step1_pdf_to_md.pdf_to_markdown(
-            Path(document.stored_path), settings.markdown_dir, docling
+            Path(document.stored_path), settings.markdown_dir, docling, vlm=vlm
         )
         document.markdown_path = str(md_path)
         document.status = "chunking"
@@ -143,6 +151,7 @@ async def process_document(
             embedding=embedding,
             vector_store=vector_store,
             document_id=document.id,
+            sparse_embedder=get_sparse_embedder(),
         )
         document.chunk_count = count
         document.status = "ready"

@@ -1,30 +1,95 @@
-import { useState, useEffect, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, NavLink, useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { ChatAPI, Citation, ChatSessionSummary } from '../api/client';
-import ProjectNav from '../components/ProjectNav';
+import { ChatAPI, Citation, ChatSessionSummary, ProjectsAPI } from '../api/client';
+import PdfPreviewModal from '../components/PdfPreviewModal';
 
-// Regex: [filename#N] → styled badge
-const CITE_RE = /\[([^\]]+?)#(\d+)\]/g;
 
-function renderWithCiteBadges(children: React.ReactNode): React.ReactNode {
-  if (typeof children !== 'string') return children;
+interface ModalTarget {
+  pdfUrl: string;
+  page: number;
+  bbox: number[] | null;
+  pageWidth: number | null;
+  pageHeight: number | null;
+  textPreview: string;
+}
+
+/** Process a plain text string and replace [file#N] markers with clickable badge buttons */
+function processCiteText(
+  text: string,
+  citations: Citation[],
+  openModal: (t: ModalTarget) => void,
+  keyPrefix: string
+): React.ReactNode {
   const parts: React.ReactNode[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
-  CITE_RE.lastIndex = 0;
-  while ((m = CITE_RE.exec(children)) !== null) {
-    if (m.index > last) parts.push(children.slice(last, m.index));
+  const re = /\[([^\]]+?)#(\d+)\]/g;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const filename = m[1];
+    const chunkIdx = parseInt(m[2], 10);
+    const cit = citations.find(
+      c => c.original_file === filename && c.chunk_index === chunkIdx
+    );
+    const canPreview = cit?.document_id && cit?.page != null;
+    const badge = cit ? getTypeBadge(cit) : null;
+    const showIcon = badge && (cit?.primary_type || 'text') !== 'text';
     parts.push(
-      <span key={m.index} className="cite-badge" title={`${m[1]} chunk #${m[2]}`}>
-        {m[1].replace(/\.pdf$/i, '')} #{m[2]}
-      </span>
+      <button
+        key={`${keyPrefix}-${m.index}`}
+        className="cite-badge"
+        title={canPreview ? `Open PDF — ${filename} chunk #${chunkIdx}${badge ? ` (${badge.label})` : ''}` : `${filename} chunk #${chunkIdx}`}
+        style={{ cursor: canPreview ? 'pointer' : 'default' }}
+        onClick={() => {
+          if (!cit?.document_id || cit?.page == null) return;
+          openModal({
+            pdfUrl: `/api/files/${cit.document_id}/download`,
+            page: cit.page,
+            bbox: cit.bbox ?? null,
+            pageWidth: cit.page_width ?? null,
+            pageHeight: cit.page_height ?? null,
+            textPreview: cit.text_preview ?? '',
+          });
+        }}
+      >
+        {showIcon ? `${badge!.icon} ` : ''}{filename.replace(/\.pdf$/i, '')} #{chunkIdx}
+      </button>
     );
     last = m.index + m[0].length;
   }
-  if (last < children.length) parts.push(children.slice(last));
-  return parts.length ? parts : children;
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length > 1 ? <React.Fragment>{parts}</React.Fragment> : parts[0] ?? text;
+}
+
+/** Build a renderer that turns [file#N] markers into clickable badges.
+ *  Uses React.Children.map to handle mixed-content arrays (bold + citation tag)
+ *  without manual recursion that could cause stack overflows. */
+function makeRenderer(citations: Citation[], openModal: (t: ModalTarget) => void) {
+  return function renderWithCiteBadges(children: React.ReactNode): React.ReactNode {
+    return React.Children.map(children, (child, i) => {
+      if (typeof child === 'string') {
+        return processCiteText(child, citations, openModal, String(i));
+      }
+      return child;
+    }) ?? children;
+  };
+}
+
+/** Map a Citation primary_type to an emoji + human label for source badges. */
+const TYPE_BADGES: Record<string, { icon: string; label: string }> = {
+  text:    { icon: '📝', label: 'text'    },
+  picture: { icon: '🖼️', label: 'picture' },
+  table:   { icon: '📊', label: 'table'   },
+  formula: { icon: '🔢', label: 'formula' },
+  code:    { icon: '💻', label: 'code'    },
+  heading: { icon: '📑', label: 'heading' },
+};
+
+function getTypeBadge(c: Citation): { icon: string; label: string } {
+  const t = (c.primary_type || 'text').toLowerCase();
+  return TYPE_BADGES[t] ?? TYPE_BADGES.text;
 }
 
 interface Msg {
@@ -36,16 +101,24 @@ interface Msg {
 
 export default function ChatPage() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [q, setQ] = useState('');
+  const [projectName, setProjectName] = useState('');
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
-  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [modalTarget, setModalTarget] = useState<ModalTarget | null>(null);
+  const [expandedCitations, setExpandedCitations] = useState<Set<number>>(new Set());
   const chatAreaRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Load sessions list
+  useEffect(() => {
+    if (!id) return;
+    ProjectsAPI.get(id).then(p => setProjectName(p.name)).catch(() => {});
+  }, [id]);
+
   const refreshSessions = async () => {
     if (!id) return;
     try { setSessions(await ChatAPI.listSessions(id)); } catch { /* ignore */ }
@@ -53,17 +126,25 @@ export default function ChatPage() {
 
   useEffect(() => { refreshSessions(); }, [id]);
 
-  // Auto-scroll to bottom on new messages
   useEffect(() => {
     const el = chatAreaRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [msgs]);
 
+  const autoResize = useCallback(() => {
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = 'auto';
+      el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+    }
+  }, []);
+
   const send = async () => {
-    if (!q.trim() || !id) return;
+    if (!q.trim() || !id || loading) return;
     const question = q.trim();
     setMsgs(m => [...m, { role: 'user', content: question }]);
     setQ('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setLoading(true);
     setStreaming(false);
     let currentMode: 'answer' | 'clarify' = 'answer';
@@ -113,6 +194,8 @@ export default function ChatPage() {
     setMsgs([]);
     setSessionId(undefined);
     setQ('');
+    setExpandedCitations(new Set());
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };
 
   const loadSession = async (sid: string) => {
@@ -125,7 +208,7 @@ export default function ChatPage() {
         citations: m.citations,
         mode: 'answer' as const,
       })));
-      setSessionsOpen(false);
+      setExpandedCitations(new Set());
     } catch { /* ignore */ }
   };
 
@@ -136,103 +219,213 @@ export default function ChatPage() {
     refreshSessions();
   };
 
+  const toggleCitations = (idx: number) => {
+    setExpandedCitations(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
   return (
-    <div>
-      <ProjectNav id={id!} />
-
-      <div className="chat-toolbar">
-        <button className="new-chat-btn" onClick={() => setSessionsOpen(o => !o)}>
-          🕐 History ({sessions.length})
-        </button>
-        <button className="new-chat-btn" onClick={newConversation} style={{ marginLeft: 6 }}>
-          ＋ New conversation
-        </button>
-      </div>
-
-      {sessionsOpen && (
-        <div className="sessions-panel">
-          {sessions.length === 0 && (
-            <div style={{ color: '#9ca3af', fontSize: '0.85rem', padding: '0.5rem' }}>No history yet.</div>
-          )}
-          {sessions.map(s => (
-            <div
-              key={s.id}
-              className={`session-item${s.id === sessionId ? ' active' : ''}`}
-              onClick={() => loadSession(s.id)}
-            >
-              <div className="session-title">{s.title}</div>
-              <div className="session-meta">{s.message_count} msgs · {new Date(s.created_at).toLocaleDateString()}</div>
-              <button className="session-delete" onClick={(e) => deleteSession(s.id, e)} title="Delete">✕</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="card chat-area" ref={chatAreaRef}>
-        {msgs.length === 0 && (
-          <p style={{ color: '#9ca3af', textAlign: 'center', margin: 'auto' }}>
-            Ask anything about the documents in this project…
-          </p>
-        )}
-        {msgs.map((m, i) => (
-          <div key={i} className={`chat-bubble ${m.role}${m.mode === 'clarify' ? ' clarify' : ''}`}>
-            {m.mode === 'clarify' && (
-              <div className="clarify-badge">⚠ Need more info</div>
-            )}
-            {m.role === 'assistant' ? (
-              <div className="chat-md">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  components={{
-                    p: ({ children }) => <p>{renderWithCiteBadges(children)}</p>,
-                    li: ({ children }) => <li>{renderWithCiteBadges(children)}</li>,
-                    td: ({ children }) => <td>{renderWithCiteBadges(children)}</td>,
-                  }}
-                >{m.content}</ReactMarkdown>
-              </div>
-            ) : (
-              <div>{m.content}</div>
-            )}
-            {m.citations && m.citations.length > 0 && (
-              <div className="citations-section">
-                <div className="citations-label">Sources ({m.citations.length})</div>
-                {m.citations.map((c, j) => (
-                  <div key={j} className="citation-item">
-                    <div className="citation-meta">
-                      <span className="citation-file">{c.original_file}</span>
-                      <span className="citation-chunk">#{c.chunk_index}</span>
-                      <span className="citation-score">score {c.score.toFixed(3)}</span>
-                    </div>
-                    <div className="citation-preview">{c.text_preview}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-        {loading && !streaming && (
-          <div className="chat-bubble assistant" style={{ opacity: 0.6 }}>
-            <span className="spinner dark" /> Thinking…
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <div className="row">
-          <input
-            value={q}
-            onChange={e => setQ(e.target.value)}
-            placeholder="Ask anything..."
-            onKeyDown={e => e.key === 'Enter' && !loading && send()}
-            disabled={loading}
-          />
-          <button onClick={send} disabled={loading} style={{ minWidth: 72 }}>
-            {loading ? <><span className="spinner" />…</> : 'Send'}
+    <div className="chat-page-root">
+      {/* ── Left sidebar ── */}
+      <aside className="chat-sidebar">
+        <div className="chat-sidebar-top">
+          <button className="chat-back-btn" onClick={() => navigate('/projects')}>
+            ← Projects
           </button>
+          <span className="chat-project-name" title={projectName}>{projectName}</span>
+        </div>
+
+        <div className="chat-phase-nav">
+          <NavLink to={`/projects/${id}`} end className={({ isActive }) => `chat-phase-link${isActive ? ' active' : ''}`}>
+            <span className="chat-phase-icon">📁</span> Collection
+          </NavLink>
+          <NavLink to={`/projects/${id}/chat`} className={({ isActive }) => `chat-phase-link${isActive ? ' active' : ''}`}>
+            <span className="chat-phase-icon">💬</span> Chat
+          </NavLink>
+          <NavLink to={`/projects/${id}/qc`} className={({ isActive }) => `chat-phase-link${isActive ? ' active' : ''}`}>
+            <span className="chat-phase-icon">🔍</span> QC
+          </NavLink>
+        </div>
+
+        <div className="chat-sidebar-divider" />
+
+        <button className="new-chat-sidebar-btn" onClick={newConversation}>
+          <span>＋</span> New conversation
+        </button>
+
+        <div className="chat-history-section">
+          <div className="chat-history-label">Recent</div>
+          <div className="chat-history-list">
+            {sessions.length === 0 && (
+              <div className="chat-history-empty">No conversations yet</div>
+            )}
+            {sessions.map(s => (
+              <div
+                key={s.id}
+                className={`chat-history-item${s.id === sessionId ? ' active' : ''}`}
+                onClick={() => loadSession(s.id)}
+              >
+                <span className="chat-history-title">{s.title}</span>
+                <button
+                  className="chat-history-delete"
+                  onClick={e => deleteSession(s.id, e)}
+                  title="Delete conversation"
+                >✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+
+      {/* ── Main chat area ── */}
+      <div className="chat-main">
+        {/* Messages */}
+        <div className="chat-messages-area" ref={chatAreaRef}>
+          {msgs.length === 0 ? (
+            <div className="chat-empty-state">
+              <div className="chat-empty-icon">💬</div>
+              <h2 className="chat-empty-title">What would you like to know?</h2>
+              <p className="chat-empty-subtitle">
+                Ask anything about the documents in this project.<br />
+                I'll find relevant context and cite sources inline.
+              </p>
+            </div>
+          ) : (
+            msgs.map((m, i) => (
+              <div key={i} className={`chat-msg-row ${m.role}`}>
+                {m.role === 'assistant' && (
+                  <div className="chat-msg-avatar">AI</div>
+                )}
+                <div className="chat-msg-body">
+                  {m.mode === 'clarify' && (
+                    <div className="clarify-badge">⚠ Need more info</div>
+                  )}
+                  {m.role === 'assistant' ? (
+                    <div className="chat-md">
+                      {(() => {
+                        const renderWithCiteBadges = makeRenderer(m.citations ?? [], setModalTarget);
+                        return (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              p:      ({ children }) => <p>{renderWithCiteBadges(children)}</p>,
+                              li:     ({ children }) => <li>{renderWithCiteBadges(children)}</li>,
+                              td:     ({ children }) => <td>{renderWithCiteBadges(children)}</td>,
+                              strong: ({ children }) => <strong>{renderWithCiteBadges(children)}</strong>,
+                              em:     ({ children }) => <em>{renderWithCiteBadges(children)}</em>,
+                              h1:     ({ children }) => <h1>{renderWithCiteBadges(children)}</h1>,
+                              h2:     ({ children }) => <h2>{renderWithCiteBadges(children)}</h2>,
+                              h3:     ({ children }) => <h3>{renderWithCiteBadges(children)}</h3>,
+                              h4:     ({ children }) => <h4>{renderWithCiteBadges(children)}</h4>,
+                            }}
+                          >{m.content}</ReactMarkdown>
+                        );
+                      })()}
+                    </div>
+                  ) : (
+                    <div className="chat-user-text">{m.content}</div>
+                  )}
+                  {m.citations && m.citations.length > 0 && (
+                    <div className="chat-citations-wrap">
+                      <button
+                        className="citations-toggle-btn"
+                        onClick={() => toggleCitations(i)}
+                      >
+                        {expandedCitations.has(i) ? '▾' : '▸'}
+                        &nbsp;{m.citations.length} source{m.citations.length > 1 ? 's' : ''}
+                      </button>
+                      {expandedCitations.has(i) && (
+                        <div className="citations-expanded">
+                          {m.citations.map((c, j) => {
+                            const badge = getTypeBadge(c);
+                            return (
+                              <div key={j} className="citation-item">
+                                <div className="citation-meta">
+                                  <span
+                                    className={`citation-type-badge type-${(c.primary_type || 'text').toLowerCase()}`}
+                                    title={`Source type: ${badge.label}`}
+                                  >
+                                    {badge.icon} {badge.label}
+                                  </span>
+                                  <span className="citation-file">{c.original_file}</span>
+                                  <span className="citation-chunk">#{c.chunk_index}</span>
+                                  <span className="citation-score">score {c.score.toFixed(3)}</span>
+                                </div>
+                                <div className="citation-preview">
+                                  {(c.text_preview || '').length > 240
+                                    ? (c.text_preview || '').slice(0, 240) + '…'
+                                    : c.text_preview}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+          {loading && !streaming && (
+            <div className="chat-msg-row assistant">
+              <div className="chat-msg-avatar">AI</div>
+              <div className="chat-msg-body">
+                <div className="chat-thinking">
+                  <span /><span /><span />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Input bar */}
+        <div className="chat-input-area">
+          <div className="chat-input-box">
+            <textarea
+              ref={textareaRef}
+              value={q}
+              onChange={e => { setQ(e.target.value); autoResize(); }}
+              placeholder="Ask anything…"
+              disabled={loading}
+              rows={1}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey && !loading) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+            />
+            <button
+              className="chat-send-btn"
+              onClick={send}
+              disabled={!q.trim() || loading}
+              title="Send (Enter)"
+            >
+              {loading ? <span className="spinner" /> : '↑'}
+            </button>
+          </div>
+          <div className="chat-input-hint">
+            Enter to send · Shift+Enter for new line · Click <span className="cite-badge" style={{cursor:'default',pointerEvents:'none'}}>doc #1</span> badges to preview PDF sources
+          </div>
         </div>
       </div>
+
+      {modalTarget && (
+        <PdfPreviewModal
+          pdfUrl={modalTarget.pdfUrl}
+          page={modalTarget.page}
+          bbox={modalTarget.bbox}
+          pageWidth={modalTarget.pageWidth}
+          pageHeight={modalTarget.pageHeight}
+          textPreview={modalTarget.textPreview}
+          onClose={() => setModalTarget(null)}
+        />
+      )}
     </div>
   );
 }
-
 

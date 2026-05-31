@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ChatMessage, ChatSession, Project
 from app.pipelines import step5_query
-from app.providers.factory import get_embedding, get_llm, get_vector_store
+from app.providers.factory import (
+    get_embedding,
+    get_llm,
+    get_reranker,
+    get_sparse_embedder,
+    get_vector_store,
+)
 from app.providers.vector_store import VectorStoreProvider
 from app.schemas import Citation
 
@@ -42,11 +48,25 @@ def invalidate_taxonomy_cache(collection: str) -> None:
 
 def _hit_to_citation(hit) -> Citation:  # type: ignore[no-untyped-def]
     payload = hit.payload or {}
+    doc_id = payload.get("document_id") or None
+    page = payload.get("page")
+    bbox = payload.get("bbox")
+    raw_types = payload.get("content_types") or []
+    content_types = [str(t) for t in raw_types if isinstance(t, str)] if isinstance(raw_types, list) else []
+    primary_type = str(payload.get("primary_type") or "text")
     return Citation(
+        document_id=doc_id,
         original_file=payload.get("original_file", "?"),
         chunk_index=int(payload.get("chunk_index", 0)),
         score=float(hit.score),
-        text_preview=(payload.get("text", "") or "")[:240],
+        text_preview=(payload.get("text", "") or ""),
+        download_url=(f"/api/files/{doc_id}/download" if doc_id else None),
+        page=int(page) if isinstance(page, (int, float)) else None,
+        bbox=[float(x) for x in bbox] if isinstance(bbox, list) and len(bbox) == 4 else None,
+        page_width=payload.get("page_width"),
+        page_height=payload.get("page_height"),
+        content_types=content_types,
+        primary_type=primary_type,
     )
 
 
@@ -127,6 +147,10 @@ async def chat(
     llm = get_llm()
     embedding = get_embedding()
     vector_store = get_vector_store()
+    sparse_embedder = get_sparse_embedder()
+    reranker = get_reranker()
+    from app.core.config import get_settings
+    settings = get_settings()
 
     history = await load_history(db, session_id) if session_id else []
 
@@ -137,9 +161,12 @@ async def chat(
         llm=llm,
         embedding=embedding,
         vector_store=vector_store,
-        top_k=top_k,
+        top_k=top_k or settings.final_top_n,
         available_taxonomy=await _get_taxonomy(project.collection_name, vector_store),
         history=history,
+        sparse_embedder=sparse_embedder,
+        reranker=reranker,
+        retrieve_top_k=settings.retrieve_top_k,
     )
     citations = [_hit_to_citation(h) for h in hits]
 

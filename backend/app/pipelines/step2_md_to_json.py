@@ -283,6 +283,182 @@ async def _chunks_for_section(
     return result
 
 
+# Map Docling labels (DocItemLabel enum string values) to coarse buckets used
+# for UI badges and metadata filtering. Anything not listed falls into "text".
+_LABEL_TO_BUCKET: dict[str, str] = {
+    "picture": "picture",
+    "table": "table",
+    "formula": "formula",
+    "code": "code",
+    "section_header": "heading",
+    "title": "heading",
+    "page_header": "heading",
+    "page_footer": "text",
+    "caption": "text",
+    "footnote": "text",
+    "list_item": "text",
+    "text": "text",
+    "paragraph": "text",
+}
+
+# Priority order: when a chunk mixes multiple types we pick the most
+# informative single label for the badge.
+_TYPE_PRIORITY = ("picture", "table", "formula", "code", "heading", "text")
+
+
+def _classify_content_types(labels: list[str]) -> tuple[list[str], str]:
+    """From a list of raw Docling item labels, derive (unique_types, primary)."""
+    seen: list[str] = []
+    for raw in labels:
+        bucket = _LABEL_TO_BUCKET.get(raw, "text")
+        if bucket not in seen:
+            seen.append(bucket)
+    if not seen:
+        return [], "text"
+    for prio in _TYPE_PRIORITY:
+        if prio in seen:
+            return seen, prio
+    return seen, seen[0]
+
+
+async def _chunks_from_docling_json(
+    doc_json_path: Path,
+    *,
+    md_path: Path,
+    original_file: str,
+    project_name: str,
+    llm: LLMProvider,
+    output_dir: Path | None,
+    progress_callback: "Callable[[int, int], None] | None",
+) -> list[ChunkPayload]:
+    """Layout-aware chunking using Docling's HybridChunker.
+
+    Reads the persisted DoclingDocument (from step1), runs HybridChunker, and
+    extracts (page, bbox) from each chunk's prov so the frontend can render an
+    inline PDF preview with a highlight overlay.
+    """
+    from docling.chunking import HybridChunker  # type: ignore
+    from docling_core.types.doc import DoclingDocument  # type: ignore
+
+    raw = json.loads(doc_json_path.read_text(encoding="utf-8"))
+    doc = DoclingDocument.model_validate(raw)
+
+    # Cache page dimensions: page_no -> (width, height) in PDF points.
+    page_sizes: dict[int, tuple[float, float]] = {}
+    try:
+        for pno, page in doc.pages.items():
+            size = getattr(page, "size", None)
+            if size is not None:
+                page_sizes[int(pno)] = (float(size.width), float(size.height))
+    except Exception:  # noqa: BLE001
+        pass
+
+    chunker = HybridChunker()
+    chunks_iter = list(chunker.chunk(doc))
+    total = len(chunks_iter)
+    if progress_callback:
+        progress_callback(0, total)
+
+    doc_title = ""
+    # Try to use the first chunk's top heading as document title.
+    if chunks_iter:
+        first_meta = chunks_iter[0].meta
+        first_headings = getattr(first_meta, "headings", None) or []
+        if first_headings:
+            doc_title = first_headings[0]
+    if not doc_title:
+        doc_title = Path(original_file).stem
+
+    default_taxonomy = await _classify_document(doc_title, llm)
+
+    out: list[ChunkPayload] = []
+    for i, ch in enumerate(chunks_iter):
+        meta = ch.meta
+        headings: list[str] = list(getattr(meta, "headings", None) or [])
+        # Aggregate page + bbox across all prov entries (a chunk may span items).
+        pages: list[int] = []
+        boxes: list[tuple[float, float, float, float]] = []
+        labels: list[str] = []
+        for it in (getattr(meta, "doc_items", None) or []):
+            lbl = getattr(it, "label", None)
+            if lbl is not None:
+                labels.append(str(getattr(lbl, "value", lbl)).lower())
+            for p in (getattr(it, "prov", None) or []):
+                try:
+                    pages.append(int(p.page_no))
+                    bbox = p.bbox
+                    boxes.append(
+                        (float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b))
+                    )
+                except Exception:  # noqa: BLE001
+                    continue
+        content_types, primary_type = _classify_content_types(labels)
+        # Use the most-frequent (mode) page number across all prov entries.
+        # When HybridChunker splits a multi-page TextItem into sub-chunks, all
+        # sub-chunks share the same doc_item references (and therefore the same
+        # page list).  The later sub-chunk's text lives on the later page, which
+        # appears more often in the combined prov list — so taking the mode gives
+        # the correct page.  Ties are broken by the earlier page (min).
+        page_no: int | None = None
+        if pages:
+            from collections import Counter as _Counter
+            _counts = _Counter(pages)
+            _max_c = _counts.most_common(1)[0][1]
+            page_no = min(pg for pg, c in _counts.items() if c == _max_c)
+        bbox_union: list[float] | None = None
+        if boxes:
+            # Compute union of boxes on that page only.
+            same_page_boxes = [b for b, pg in zip(boxes, pages) if pg == page_no]
+            l = min(b[0] for b in same_page_boxes)
+            r = max(b[2] for b in same_page_boxes)
+            # BOTTOMLEFT origin: t > b. Top of union is max(t), bottom is min(b).
+            t = max(b[1] for b in same_page_boxes)
+            b_ = min(b[3] for b in same_page_boxes)
+            bbox_union = [l, t, r, b_]
+
+        page_w, page_h = (None, None)
+        if page_no is not None and page_no in page_sizes:
+            page_w, page_h = page_sizes[page_no]
+
+        out.append(ChunkPayload(
+            text=ch.text,
+            original_file=original_file,
+            source_file=md_path.name,
+            chunk_index=i,
+            project_name=project_name,
+            document_title=doc_title,
+            article_id=headings[0] if headings else "",
+            section_id=headings[-1] if len(headings) > 1 else "",
+            tags=[],
+            suggested_questions=[],
+            l1=default_taxonomy[0],
+            l2=default_taxonomy[1],
+            l3=default_taxonomy[2],
+            page=page_no,
+            bbox=bbox_union,
+            page_width=page_w,
+            page_height=page_h,
+            headings=headings,
+            content_types=content_types,
+            primary_type=primary_type,
+        ))
+        if progress_callback:
+            progress_callback(i + 1, total)
+
+    logger.info(
+        "step2: docling-native chunking produced %d chunks for %s", len(out), original_file
+    )
+
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        out_path = output_dir / (md_path.stem + ".chunks.json")
+        out_path.write_text(
+            json.dumps([c.model_dump() for c in out], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    return out
+
+
 async def markdown_to_chunks(
     md_path: Path,
     *,
@@ -293,6 +469,24 @@ async def markdown_to_chunks(
     output_dir: Path | None = None,
     progress_callback: "Callable[[int, int], None] | None" = None,
 ) -> list[ChunkPayload]:
+    # Prefer layout-aware (Docling-native) chunking when *.doc.json is present.
+    doc_json_path = md_path.parent / (md_path.stem + ".doc.json")
+    if doc_json_path.exists():
+        try:
+            return await _chunks_from_docling_json(
+                doc_json_path,
+                md_path=md_path,
+                original_file=original_file,
+                project_name=project_name,
+                llm=llm,
+                output_dir=output_dir,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "step2: docling-native chunking failed (%s), falling back to LLM split", exc
+            )
+
     markdown = md_path.read_text(encoding="utf-8")
     prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
     sections = _split_into_sections(markdown)

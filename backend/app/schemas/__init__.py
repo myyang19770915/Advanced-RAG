@@ -104,6 +104,15 @@ class Citation(BaseModel):
     score: float
     text_preview: str
     download_url: str | None = None
+    # PDF positional metadata for inline preview (None if non-PDF or unknown).
+    page: int | None = None
+    bbox: list[float] | None = None
+    page_width: float | None = None
+    page_height: float | None = None
+    # Content type metadata: which kinds of layout elements feed this chunk.
+    # primary_type is the most informative single label for UI badges.
+    content_types: list[str] = Field(default_factory=list)
+    primary_type: str = "text"
 
 
 class ChatResponse(BaseModel):
@@ -189,3 +198,15 @@ class ChunkPayload(BaseModel):
     l1: str = ""
     l2: str = ""
     l3: str = ""
+    # PDF positional metadata (None for non-PDF or unknown).
+    # page: 1-based page number. bbox: [l, t, r, b] in PDF point coordinates,
+    # origin BOTTOMLEFT (PDF native). page_width/height in points (1 pt = 1/72 in).
+    page: int | None = None
+    bbox: list[float] | None = None
+    page_width: float | None = None
+    page_height: float | None = None
+    headings: list[str] = Field(default_factory=list)
+    # Content type metadata derived from Docling doc_items[*].label.
+    # primary_type ranks: picture > table > formula > code > heading > text.
+    content_types: list[str] = Field(default_factory=list)
+    primary_type: str = "text"

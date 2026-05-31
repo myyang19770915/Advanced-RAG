@@ -9,6 +9,8 @@ import re
 
 from app.providers.embedding import EmbeddingProvider
 from app.providers.llm import LLMProvider
+from app.providers.rerank import Reranker
+from app.providers.sparse import SparseEmbedder
 from app.providers.vector_store import SearchHit, VectorStoreProvider
 
 _AGENT1_BASE_PROMPT = (
@@ -68,18 +70,20 @@ AGENT2_SYSTEM_PROMPT = (
     "[2501.17887v1.pdf#13]. If the answer is not in the context, "
     "reply that you don't know. You may use the prior conversation only to "
     "understand what the user is referring to — do NOT cite the conversation "
-    "history as a source. keywords: answer, context."
+    "history as a source. keywords: answer, context. "
+    "IMPORTANT: Always respond in Traditional Chinese (繁體中文)."
 )
 
 
 CLARIFY_SYSTEM_PROMPT = (
     "You are Agent2 in clarification mode. The retrieval system could not "
     "find chunks confidently relevant to the user's question. DO NOT try to "
-    "answer. Instead, ask ONE concise clarifying question (in the user's "
-    "language) to help narrow down what they want. Optionally suggest 2-3 "
-    "specific angles they could pick from, based on the weak hits provided. "
-    "Do NOT cite any sources. Keep it short (under 80 words). Start with a "
-    "brief acknowledgement that you need more info."
+    "answer. Instead, ask ONE concise clarifying question to help narrow down "
+    "what they want. Optionally suggest 2-3 specific angles they could pick "
+    "from, based on the weak hits provided. Do NOT cite any sources. "
+    "Keep it short (under 80 words). Start with a brief acknowledgement that "
+    "you need more info. "
+    "IMPORTANT: Always respond in Traditional Chinese (繁體中文)."
 )
 
 # Score threshold below which we trigger clarification (cosine similarity, 0..1).
@@ -178,23 +182,27 @@ async def plan_query(
     if project_name:
         plan.filters.setdefault("project_name", project_name)
 
-    # Validate l1/l2/l3 against known taxonomy (case-insensitive).
-    # If no taxonomy is available, strip all three to avoid zero-result filters.
+    # Taxonomy filter strategy: l2/l3 are too granular and regularly cause
+    # false-negative exclusions (e.g. a paper tagged "Research Papers" gets
+    # excluded by a filter for "Document Processing"). Always strip l2/l3.
+    # Only apply l1 when it matches exactly one taxonomy value AND there is
+    # only one l1 value in the collection (otherwise the filter is ambiguous).
+    for key in ("l2", "l3"):
+        plan.filters.pop(key, None)
+
     if available_taxonomy and any(available_taxonomy.values()):
-        for key in ("l1", "l2", "l3"):
-            val = plan.filters.get(key)
-            if not val:
-                continue
-            known = available_taxonomy.get(key, [])
-            # Accept exact match or case-insensitive match (use canonical case)
-            canonical = next((k for k in known if k.lower() == val.lower()), None)
-            if canonical:
-                plan.filters[key] = canonical
+        l1_known = available_taxonomy.get("l1", [])
+        l1_val = plan.filters.get("l1")
+        if l1_val:
+            canonical = next((k for k in l1_known if k.lower() == l1_val.lower()), None)
+            if canonical and len(l1_known) > 1:
+                # Multiple l1 categories exist → keep the filter to narrow scope
+                plan.filters["l1"] = canonical
             else:
-                plan.filters.pop(key, None)
+                # Only one l1 category or no match → filter adds no value / risks exclusion
+                plan.filters.pop("l1", None)
     else:
-        for key in ("l1", "l2", "l3"):
-            plan.filters.pop(key, None)
+        plan.filters.pop("l1", None)
 
     return plan
 
@@ -206,11 +214,68 @@ async def retrieve(
     embedding: EmbeddingProvider,
     vector_store: VectorStoreProvider,
     top_k: int = 5,
+    sparse_embedder: SparseEmbedder | None = None,
+    reranker: Reranker | None = None,
+    retrieve_top_k: int | None = None,
 ) -> list[SearchHit]:
-    vectors = await embedding.embed([plan.rewritten_query])
-    return await vector_store.search(
-        collection, vectors[0], top_k=top_k, filters=plan.filters or None
-    )
+    """Retrieve + (optional) hybrid + (optional) rerank.
+
+    Pipeline:
+      1. Embed the rewritten query (dense, plus sparse if a real encoder is provided).
+      2. Hybrid search via Qdrant RRF when sparse is available; otherwise dense-only.
+         Fetches ``retrieve_top_k`` (defaults to ``top_k`` when no reranker).
+      3. If ``reranker`` is enabled, re-score the candidates and keep ``top_k``.
+         Otherwise return the first ``top_k`` hits.
+    """
+    from app.providers.sparse import OffSparse
+    from app.providers.rerank import OffReranker
+
+    sparse = sparse_embedder or OffSparse()
+    rer = reranker or OffReranker()
+
+    # Decide how many candidates to fetch from the vector store.
+    candidate_k = retrieve_top_k if (retrieve_top_k and rer.enabled) else top_k
+    candidate_k = max(candidate_k, top_k)
+
+    dense_vec = (await embedding.embed([plan.rewritten_query]))[0]
+    use_hybrid = not isinstance(sparse, OffSparse)
+
+    if use_hybrid:
+        sv = await sparse.embed_query(plan.rewritten_query)
+        hits = await vector_store.hybrid_search(
+            collection,
+            dense_vector=dense_vec,
+            sparse_indices=sv.indices,
+            sparse_values=sv.values,
+            top_k=candidate_k,
+            filters=plan.filters or None,
+        )
+    else:
+        hits = await vector_store.search(
+            collection,
+            dense_vec,
+            top_k=candidate_k,
+            filters=plan.filters or None,
+        )
+
+    if not rer.enabled or len(hits) <= 1:
+        return hits[:top_k]
+
+    docs = [str(h.payload.get("text") or "") for h in hits]
+    try:
+        results = await rer.rerank(plan.rewritten_query, docs, top_n=top_k)
+    except Exception:  # noqa: BLE001 — never let rerank failure break the answer
+        import logging
+        logging.getLogger(__name__).exception("Reranker failed; falling back to vector-store order")
+        return hits[:top_k]
+
+    reordered: list[SearchHit] = []
+    for r in results:
+        if 0 <= r.index < len(hits):
+            h = hits[r.index]
+            # Replace score with rerank relevance so the UI reflects what was used.
+            reordered.append(SearchHit(id=h.id, score=r.relevance_score, payload=h.payload))
+    return reordered or hits[:top_k]
 
 
 async def answer(
@@ -267,6 +332,9 @@ async def run_query(
     top_k: int = 5,
     available_taxonomy: dict[str, list[str]] | None = None,
     history: list[dict] | None = None,
+    sparse_embedder: SparseEmbedder | None = None,
+    reranker: Reranker | None = None,
+    retrieve_top_k: int | None = None,
 ) -> tuple[str, list[SearchHit]]:
     plan = await plan_query(
         question=question,
@@ -281,6 +349,9 @@ async def run_query(
         embedding=embedding,
         vector_store=vector_store,
         top_k=top_k,
+        sparse_embedder=sparse_embedder,
+        reranker=reranker,
+        retrieve_top_k=retrieve_top_k,
     )
     text = await answer(question=question, hits=hits, llm=llm, history=history)
     return text, hits

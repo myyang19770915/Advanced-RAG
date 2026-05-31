@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 
@@ -172,3 +173,32 @@ async def download(document_id: str, db: SessionDep) -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="file missing on disk")
     return FileResponse(path, filename=doc.original_filename)
+
+
+@download_router.get("/{document_id}/chunk/{chunk_index}")
+async def chunk_location(document_id: str, chunk_index: int, db: SessionDep) -> dict:
+    """Return page + bbox for a specific chunk so the frontend can render a PDF highlight."""
+    doc = await db.get(Document, document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+    if not doc.markdown_path:
+        raise HTTPException(status_code=404, detail="document not yet processed")
+
+    md_path = Path(doc.markdown_path)
+    chunks_path = md_path.parent / (md_path.stem + ".chunks.json")
+    if not chunks_path.exists():
+        raise HTTPException(status_code=404, detail="chunks file not found")
+
+    chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+    for c in chunks:
+        if int(c.get("chunk_index", -1)) == chunk_index:
+            return {
+                "document_id": document_id,
+                "chunk_index": chunk_index,
+                "page": c.get("page"),
+                "bbox": c.get("bbox"),
+                "page_width": c.get("page_width"),
+                "page_height": c.get("page_height"),
+                "text_preview": (c.get("text") or "")[:200],
+            }
+    raise HTTPException(status_code=404, detail=f"chunk {chunk_index} not found")

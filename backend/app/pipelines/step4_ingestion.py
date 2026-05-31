@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 from app.providers.embedding import EmbeddingProvider
+from app.providers.sparse import OffSparse, SparseEmbedder
 from app.providers.vector_store import VectorPoint, VectorStoreProvider
 from app.schemas import ChunkPayload
 
@@ -27,17 +28,32 @@ async def embed_and_upsert(
     embedding: EmbeddingProvider,
     vector_store: VectorStoreProvider,
     document_id: str = "",
+    sparse_embedder: SparseEmbedder | None = None,
 ) -> int:
     if not chunks:
         return 0
-    await vector_store.ensure_collection(collection, embedding.dim)
-    vectors = await embedding.embed([c.text for c in chunks])
+
+    # Decide collection layout: hybrid iff a real sparse encoder is provided.
+    sparse = sparse_embedder if sparse_embedder is not None else OffSparse()
+    use_sparse = not isinstance(sparse, OffSparse)
+    await vector_store.ensure_collection(collection, embedding.dim, sparse=use_sparse)
+
+    texts = [c.text for c in chunks]
+    vectors = await embedding.embed(texts)
+    sparse_vecs = await sparse.embed(texts) if use_sparse else [None] * len(chunks)
+
     points: list[VectorPoint] = []
-    for c, vec in zip(chunks, vectors):
+    for c, vec, sv in zip(chunks, vectors, sparse_vecs):
         pid = point_id_for(c.original_file, c.chunk_index, document_id=document_id)
         payload = c.model_dump()
         if document_id:
             payload["document_id"] = document_id
-        points.append(VectorPoint(id=pid, vector=vec, payload=payload))
+        points.append(VectorPoint(
+            id=pid,
+            vector=vec,
+            payload=payload,
+            sparse_indices=(sv.indices if sv else None),
+            sparse_values=(sv.values if sv else None),
+        ))
     await vector_store.upsert(collection, points)
     return len(points)

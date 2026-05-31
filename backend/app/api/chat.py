@@ -9,7 +9,13 @@ from sqlalchemy import select
 from app.db.session import SessionDep, SessionLocal
 from app.models import ChatMessage, ChatSession, Project
 from app.pipelines import step5_query
-from app.providers.factory import get_embedding, get_llm, get_vector_store
+from app.providers.factory import (
+    get_embedding,
+    get_llm,
+    get_reranker,
+    get_sparse_embedder,
+    get_vector_store,
+)
 from app.schemas import (
     ChatMessageOut,
     ChatRequest,
@@ -65,6 +71,10 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
             llm = get_llm()
             embedding = get_embedding()
             vector_store = get_vector_store()
+            sparse_embedder = get_sparse_embedder()
+            reranker = get_reranker()
+            from app.core.config import get_settings
+            settings = get_settings()
             taxonomy = await _get_taxonomy(project.collection_name, vector_store)
             plan = await step5_query.plan_query(
                 question=payload.question, llm=llm, project_name=project.name,
@@ -75,7 +85,10 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
                 collection=project.collection_name,
                 embedding=embedding,
                 vector_store=vector_store,
-                top_k=payload.top_k,
+                top_k=payload.top_k or settings.final_top_n,
+                sparse_embedder=sparse_embedder,
+                reranker=reranker,
+                retrieve_top_k=settings.retrieve_top_k,
             )
             low_conf = step5_query.is_low_confidence(hits)
             mode = "clarify" if low_conf else "answer"
@@ -106,7 +119,15 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
             )
             yield "event: done\ndata: {}\n\n"
 
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disables nginx / proxy buffering
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/sessions/{session_id}", response_model=ChatSessionDetail)

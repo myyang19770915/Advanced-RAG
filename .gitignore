@@ -26,5 +26,9 @@ backend/data/markdown/
 *.db
 *.sqlite*
 
+# Secrets / environment files
+.env
+backend/.env
+
 # Logs
 *.log
