@@ -11,6 +11,7 @@ qdrant-client>=1.10
 numpy>=1.26
 fastembed>=0.8,<0.9   # for BM25 sparse vectors (hybrid search)
 docling>=2.0          # PDF to markdown conversion (LocalDocling provider)
+opencv-python-headless>=4.8  # image processing (headless, no GUI deps)
 
 # dev
 pytest>=8.2
