@@ -111,6 +111,7 @@ export default function ChatPage() {
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [modalTarget, setModalTarget] = useState<ModalTarget | null>(null);
   const [expandedCitations, setExpandedCitations] = useState<Set<number>>(new Set());
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
   const chatAreaRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -229,8 +230,16 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page-root">
+      {/* Mobile backdrop – closes chat sidebar when tapped */}
+      {chatSidebarOpen && (
+        <div
+          className="chat-sidebar-mobile-overlay"
+          onClick={() => setChatSidebarOpen(false)}
+        />
+      )}
+
       {/* ── Left sidebar ── */}
-      <aside className="chat-sidebar">
+      <aside className={`chat-sidebar${chatSidebarOpen ? ' open' : ''}`}>
         <div className="chat-sidebar-top">
           <button className="chat-back-btn" onClick={() => navigate('/projects')}>
             ← Projects
@@ -282,6 +291,23 @@ export default function ChatPage() {
 
       {/* ── Main chat area ── */}
       <div className="chat-main">
+        {/* Mobile header – only visible on ≤768px via CSS */}
+        <div className="chat-mobile-header">
+          <button
+            className="chat-history-toggle-btn"
+            onClick={() => setChatSidebarOpen(o => !o)}
+          >
+            ☰ History
+          </button>
+          <span style={{ flex: 1 }} />
+          <button
+            className="chat-history-toggle-btn"
+            onClick={newConversation}
+          >
+            ＋ New
+          </button>
+        </div>
+
         {/* Messages */}
         <div className="chat-messages-area" ref={chatAreaRef}>
           {msgs.length === 0 ? (

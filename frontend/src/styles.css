@@ -953,3 +953,188 @@ th, td { padding: 0.5rem; border-bottom: 1px solid #e5e7eb; text-align: left; fo
   color: #6b7280;
   font-size: 0.85rem;
 }
+
+/* ════════════════════════════════════════════════════
+   RESPONSIVE DESIGN  —  Mobile (≤ 768 px)
+   ════════════════════════════════════════════════════ */
+
+/* ── Mobile top bar (hidden on desktop) ── */
+.mobile-topbar {
+  display: none;
+  position: sticky;
+  top: 0;
+  z-index: 35;
+  height: 52px;
+  background: #111827;
+  padding: 0 1rem;
+  align-items: center;
+  gap: 0.75rem;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  flex-shrink: 0;
+}
+.mobile-topbar-title {
+  flex: 1;
+  font-size: 1rem;
+  font-weight: 700;
+  color: #e5e7eb;
+  letter-spacing: -0.01em;
+}
+
+/* ── Hamburger button (hidden on desktop) ── */
+.hamburger {
+  display: none;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.18);
+  color: #e5e7eb;
+  font-size: 1.1rem;
+  width: 36px;
+  height: 36px;
+  min-height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.hamburger:hover { background: rgba(255,255,255,0.12); }
+
+/* ── Dim overlay when sidebar is open on mobile ── */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 45;
+}
+.sidebar-overlay.open { display: block; }
+
+/* ── Chat sidebar mobile overlay (inside chat-page-root) ── */
+.chat-sidebar-mobile-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  z-index: 19;
+}
+
+/* ── Chat mobile header (hidden on desktop) ── */
+.chat-mobile-header { display: none; }
+
+/* ── Chat history toggle button (hidden on desktop) ── */
+.chat-history-toggle-btn { display: none; }
+
+/* ════════════════════════════
+   ≤ 768 px breakpoint
+   ════════════════════════════ */
+@media (max-width: 768px) {
+
+  /* Show mobile controls */
+  .mobile-topbar          { display: flex; }
+  .hamburger              { display: flex; }
+  .chat-sidebar-mobile-overlay { display: block; }
+
+  /* ── Global layout ── */
+  .layout { flex-direction: column; }
+
+  /* Global sidebar → slide-in drawer */
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: -250px;
+    width: 240px;
+    height: 100%;
+    z-index: 50;
+    transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow-y: auto;
+    padding-top: 0.5rem;
+  }
+  .sidebar.open { left: 0; }
+
+  /* Main content: remove desktop padding */
+  .main { padding: 0.75rem; }
+
+  /* ── Phase tabs: horizontal scroll ── */
+  .phase-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    flex-wrap: nowrap;
+  }
+  .phase-tabs::-webkit-scrollbar { display: none; }
+  .phase-tab { flex-shrink: 0; white-space: nowrap; }
+
+  /* ── Tables: horizontal scroll ── */
+  .card { overflow-x: auto; }
+  table { min-width: 460px; }
+
+  /* ── Prevent iOS auto-zoom on input focus ── */
+  input, textarea, select { font-size: 16px !important; }
+
+  /* ── Larger tap targets ── */
+  button { min-height: 38px; }
+
+  /* ══ Chat page ══ */
+
+  /* Remove the fixed left-220px offset; account for mobile topbar */
+  .chat-page-root {
+    left: 0 !important;
+    top: 52px !important;
+  }
+
+  /* Chat history sidebar → slide-in drawer */
+  .chat-sidebar {
+    position: absolute;
+    left: -270px;
+    width: 260px;
+    height: 100%;
+    z-index: 20;
+    transition: left 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .chat-sidebar.open { left: 0; }
+
+  /* Mobile header inside chat-main */
+  .chat-mobile-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid #f0f0f0;
+    background: #fff;
+    flex-shrink: 0;
+  }
+  .chat-history-toggle-btn {
+    display: flex;
+    align-items: center;
+    background: transparent;
+    border: 1px solid #e5e7eb;
+    color: #6b7280;
+    font-size: 0.82rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 6px;
+    cursor: pointer;
+    min-height: 32px;
+    white-space: nowrap;
+  }
+  .chat-history-toggle-btn:hover { background: #f3f4f6; color: #374151; }
+
+  /* Chat messages padding */
+  .chat-msg-row         { padding: 0.65rem 0.75rem; }
+  .chat-msg-row.user .chat-msg-body { max-width: 90%; }
+
+  /* Input area */
+  .chat-input-area      { padding: 0.65rem 0.75rem 0.85rem; }
+  .chat-input-hint      { display: none; }
+
+  /* Empty state */
+  .chat-empty-title     { font-size: 1.1rem; }
+  .chat-empty-subtitle  { font-size: 0.86rem; }
+
+  /* PDF modal → full screen on mobile */
+  .pdf-modal {
+    width: 100vw;
+    height: 100svh;
+    border-radius: 0;
+  }
+}
